@@ -1,0 +1,1449 @@
+/* $Id: imdevphon.c,v 1.2 2003/08/22 01:08:17 nlevitt Exp $ */
+/*
+ * Copyright (c) 2003 Noah Levitt 
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+/*
+ * GTK+ Devanagari phonetic input method
+ */
+
+#ifdef HAVE_CONFIG_H
+# include <config.h>
+#endif
+
+#include <gtk/gtkimcontext.h>
+#include <gtk/gtkimmodule.h>
+#include <gdk/gdkkeysyms.h>
+#include <gtk/gtk.h>
+#include <string.h>
+
+#include "im-extra-intl.h"
+
+
+static GType type_devanagari_phonetic = 0;
+
+enum { DEVANAGARI_PHONETIC_MAX_COMPOSE_LEN = 5 };
+
+typedef struct
+{
+  guint keys[DEVANAGARI_PHONETIC_MAX_COMPOSE_LEN + 1];  /* 0-terminated */
+  gchar *string;
+}
+ComposeSequence;
+
+/* like GtkIMContextSimple */
+static guint compose_buffer[DEVANAGARI_PHONETIC_MAX_COMPOSE_LEN + 1];
+static int n_compose = 0;
+
+
+static ComposeSequence devanagari_phonetic_compose_seqs[] =
+{
+  /* vowels */
+  { {   GDK_a,       0,       0,       0,       0,       0, }, "अ"  }, /* a */
+  { {   GDK_a,   GDK_a,       0,       0,       0,       0, }, "आ"  }, /* aa/A */
+  { {   GDK_A,       0,       0,       0,       0,       0, }, "आ"  }, /* aa/A */
+  { {   GDK_i,       0,       0,       0,       0,       0, }, "इ"  }, /* i */
+  { {   GDK_i,   GDK_i,       0,       0,       0,       0, }, "ई"  }, /* ii/I */
+  { {   GDK_I,       0,       0,       0,       0,       0, }, "ई"  }, /* ii/I */
+  { {   GDK_u,       0,       0,       0,       0,       0, }, "उ"  }, /* u */
+  { {   GDK_u,   GDK_u,       0,       0,       0,       0, }, "ऊ"  }, /* uu/U */
+  { {   GDK_U,       0,       0,       0,       0,       0, }, "ऊ"  }, /* uu/U */
+  { {   GDK_e,       0,       0,       0,       0,       0, }, "ए"  }, /* e */
+  { {   GDK_a,   GDK_i,       0,       0,       0,       0, }, "ऐ"  }, /* ai/E */
+  { {   GDK_E,       0,       0,       0,       0,       0, }, "ऐ"  }, /* ai/E */
+  { {   GDK_o,       0,       0,       0,       0,       0, }, "ओ"  }, /* o */
+  { {   GDK_a,   GDK_u,       0,       0,       0,       0, }, "औ"  }, /* au */
+  { {   GDK_R,       0,       0,       0,       0,       0, }, "ऋ"  }, /* R */
+  { {   GDK_L,       0,       0,       0,       0,       0, }, "ऌ"  }, /* L */
+
+  /* digits */
+  { {   GDK_0,       0,       0,       0,       0,       0, },  "०" }, /* 0 */
+  { {   GDK_1,       0,       0,       0,       0,       0, },  "१" }, /* 1 */
+  { {   GDK_2,       0,       0,       0,       0,       0, },  "२" }, /* 2 */
+  { {   GDK_3,       0,       0,       0,       0,       0, },  "३" }, /* 3 */
+  { {   GDK_4,       0,       0,       0,       0,       0, },  "४" }, /* 4 */
+  { {   GDK_5,       0,       0,       0,       0,       0, },  "५" }, /* 5 */
+  { {   GDK_6,       0,       0,       0,       0,       0, },  "६" }, /* 6 */
+  { {   GDK_7,       0,       0,       0,       0,       0, },  "७" }, /* 7 */
+  { {   GDK_8,       0,       0,       0,       0,       0, },  "८" }, /* 8 */
+  { {   GDK_9,       0,       0,       0,       0,       0, },  "९" }, /* 9 */
+
+  /* special stuff */
+  { {   GDK_o,   GDK_m,       0,       0,       0,       0, },  "ॐ" }, /* om */
+
+  /* XXX: do we want these combining characters here, or only on the ends
+   * of syllables and stuff? (that would make the tables much bigger) */
+  { {        GDK_grave,   0,       0,       0,       0,       0, },  "\340\244\201" }, /* candrabindu */
+  { {   GDK_asciitilde,   0,       0,       0,       0,       0, },  "\340\244\202" }, /* anusvara */
+  { {            GDK_H,   0,       0,       0,       0,       0, },  "\340\244\203" }, /* visarga */
+  { {        GDK_colon,   0,       0,       0,       0,       0, },  "\340\244\203" }, /* visarga */
+  { {    GDK_semicolon,   0,       0,       0,       0,       0, },  "\340\245\215" }, /* virama by itself (mostly useless) */ 
+
+  { {  GDK_period,          0,       0,      0,      0,      0, }, "।" }, /* danda */
+  { {  GDK_period, GDK_period,       0,      0,      0,      0, }, "॥" }, /* double danda */
+  { { GDK_greater,          0,       0,      0,      0,      0, }, "\340\244\274" }, /* nukta */
+
+  { {   GDK_x,       0,       0,       0,       0,       0, },  "\342\200\215" }, /* ZWJ */
+  { {   GDK_X,       0,       0,       0,       0,       0, },  "\342\200\214" }, /* ZWNJ */
+
+  /* Now all the consonant + vowel combinations, generated by a script. The
+   * comments aren't always that useful.
+   */
+
+  { {   GDK_b,       0,       0,       0,       0,       0, },  "ब्" }, /* ba + virama */
+  { {   GDK_b,   GDK_a,       0,       0,       0,       0, },  "ब" }, /* ba */
+  { {   GDK_b,   GDK_e,       0,       0,       0,       0, },  "बे" }, /* ba + e */
+  { {   GDK_b,   GDK_A,       0,       0,       0,       0, },  "बा" }, /* ba + A */
+  { {   GDK_b,   GDK_r,       0,       0,       0,       0, },  "बृ" }, /* ba + r */
+  { {   GDK_b,   GDK_i,   GDK_i,       0,       0,       0, },  "बी" }, /* ba + ii */
+  { {   GDK_b,   GDK_E,       0,       0,       0,       0, },  "बै" }, /* ba + E */
+  { {   GDK_b,   GDK_r,   GDK_r,       0,       0,       0, },  "बॄ" }, /* ba + rr */
+  { {   GDK_b,   GDK_a,   GDK_u,       0,       0,       0, },  "बौ" }, /* ba + au */
+  { {   GDK_b,   GDK_u,       0,       0,       0,       0, },  "बु" }, /* ba + u */
+  { {   GDK_b,   GDK_u,   GDK_u,       0,       0,       0, },  "बू" }, /* ba + uu */
+  { {   GDK_b,   GDK_R,       0,       0,       0,       0, },  "बॄ" }, /* ba + R */
+  { {   GDK_b,   GDK_I,       0,       0,       0,       0, },  "बी" }, /* ba + I */
+  { {   GDK_b,   GDK_a,   GDK_i,       0,       0,       0, },  "बै" }, /* ba + ai */
+  { {   GDK_b,   GDK_a,   GDK_a,       0,       0,       0, },  "बा" }, /* ba + aa */
+  { {   GDK_b,   GDK_o,       0,       0,       0,       0, },  "बो" }, /* ba + o */
+  { {   GDK_b,   GDK_i,       0,       0,       0,       0, },  "बि" }, /* ba + i */
+  { {   GDK_b,   GDK_U,       0,       0,       0,       0, },  "बू" }, /* ba + U */
+
+  { {   GDK_F,       0,       0,       0,       0,       0, },  "ठ्" }, /* Fa + virama */
+  { {   GDK_F,   GDK_a,       0,       0,       0,       0, },  "ठ" }, /* Fa */
+  { {   GDK_F,   GDK_e,       0,       0,       0,       0, },  "ठे" }, /* Fa + e */
+  { {   GDK_F,   GDK_A,       0,       0,       0,       0, },  "ठा" }, /* Fa + A */
+  { {   GDK_F,   GDK_r,       0,       0,       0,       0, },  "ठृ" }, /* Fa + r */
+  { {   GDK_F,   GDK_i,   GDK_i,       0,       0,       0, },  "ठी" }, /* Fa + ii */
+  { {   GDK_F,   GDK_E,       0,       0,       0,       0, },  "ठै" }, /* Fa + E */
+  { {   GDK_F,   GDK_r,   GDK_r,       0,       0,       0, },  "ठॄ" }, /* Fa + rr */
+  { {   GDK_F,   GDK_a,   GDK_u,       0,       0,       0, },  "ठौ" }, /* Fa + au */
+  { {   GDK_F,   GDK_u,       0,       0,       0,       0, },  "ठु" }, /* Fa + u */
+  { {   GDK_F,   GDK_u,   GDK_u,       0,       0,       0, },  "ठू" }, /* Fa + uu */
+  { {   GDK_F,   GDK_R,       0,       0,       0,       0, },  "ठॄ" }, /* Fa + R */
+  { {   GDK_F,   GDK_I,       0,       0,       0,       0, },  "ठी" }, /* Fa + I */
+  { {   GDK_F,   GDK_a,   GDK_i,       0,       0,       0, },  "ठै" }, /* Fa + ai */
+  { {   GDK_F,   GDK_a,   GDK_a,       0,       0,       0, },  "ठा" }, /* Fa + aa */
+  { {   GDK_F,   GDK_o,       0,       0,       0,       0, },  "ठो" }, /* Fa + o */
+  { {   GDK_F,   GDK_i,       0,       0,       0,       0, },  "ठि" }, /* Fa + i */
+  { {   GDK_F,   GDK_U,       0,       0,       0,       0, },  "ठू" }, /* Fa + U */
+
+  { {   GDK_y,       0,       0,       0,       0,       0, },  "य्" }, /* ya + virama */
+  { {   GDK_y,   GDK_a,       0,       0,       0,       0, },  "य" }, /* ya */
+  { {   GDK_y,   GDK_e,       0,       0,       0,       0, },  "ये" }, /* ya + e */
+  { {   GDK_y,   GDK_A,       0,       0,       0,       0, },  "या" }, /* ya + A */
+  { {   GDK_y,   GDK_r,       0,       0,       0,       0, },  "यृ" }, /* ya + r */
+  { {   GDK_y,   GDK_i,   GDK_i,       0,       0,       0, },  "यी" }, /* ya + ii */
+  { {   GDK_y,   GDK_E,       0,       0,       0,       0, },  "यै" }, /* ya + E */
+  { {   GDK_y,   GDK_r,   GDK_r,       0,       0,       0, },  "यॄ" }, /* ya + rr */
+  { {   GDK_y,   GDK_a,   GDK_u,       0,       0,       0, },  "यौ" }, /* ya + au */
+  { {   GDK_y,   GDK_u,       0,       0,       0,       0, },  "यु" }, /* ya + u */
+  { {   GDK_y,   GDK_u,   GDK_u,       0,       0,       0, },  "यू" }, /* ya + uu */
+  { {   GDK_y,   GDK_R,       0,       0,       0,       0, },  "यॄ" }, /* ya + R */
+  { {   GDK_y,   GDK_I,       0,       0,       0,       0, },  "यी" }, /* ya + I */
+  { {   GDK_y,   GDK_a,   GDK_i,       0,       0,       0, },  "यै" }, /* ya + ai */
+  { {   GDK_y,   GDK_a,   GDK_a,       0,       0,       0, },  "या" }, /* ya + aa */
+  { {   GDK_y,   GDK_o,       0,       0,       0,       0, },  "यो" }, /* ya + o */
+  { {   GDK_y,   GDK_i,       0,       0,       0,       0, },  "यि" }, /* ya + i */
+  { {   GDK_y,   GDK_U,       0,       0,       0,       0, },  "यू" }, /* ya + U */
+
+  { {   GDK_d,       0,       0,       0,       0,       0, },  "द्" }, /* da + virama */
+  { {   GDK_d,   GDK_a,       0,       0,       0,       0, },  "द" }, /* da */
+  { {   GDK_d,   GDK_e,       0,       0,       0,       0, },  "दे" }, /* da + e */
+  { {   GDK_d,   GDK_A,       0,       0,       0,       0, },  "दा" }, /* da + A */
+  { {   GDK_d,   GDK_r,       0,       0,       0,       0, },  "दृ" }, /* da + r */
+  { {   GDK_d,   GDK_i,   GDK_i,       0,       0,       0, },  "दी" }, /* da + ii */
+  { {   GDK_d,   GDK_E,       0,       0,       0,       0, },  "दै" }, /* da + E */
+  { {   GDK_d,   GDK_r,   GDK_r,       0,       0,       0, },  "दॄ" }, /* da + rr */
+  { {   GDK_d,   GDK_a,   GDK_u,       0,       0,       0, },  "दौ" }, /* da + au */
+  { {   GDK_d,   GDK_u,       0,       0,       0,       0, },  "दु" }, /* da + u */
+  { {   GDK_d,   GDK_u,   GDK_u,       0,       0,       0, },  "दू" }, /* da + uu */
+  { {   GDK_d,   GDK_R,       0,       0,       0,       0, },  "दॄ" }, /* da + R */
+  { {   GDK_d,   GDK_I,       0,       0,       0,       0, },  "दी" }, /* da + I */
+  { {   GDK_d,   GDK_a,   GDK_i,       0,       0,       0, },  "दै" }, /* da + ai */
+  { {   GDK_d,   GDK_a,   GDK_a,       0,       0,       0, },  "दा" }, /* da + aa */
+  { {   GDK_d,   GDK_o,       0,       0,       0,       0, },  "दो" }, /* da + o */
+  { {   GDK_d,   GDK_i,       0,       0,       0,       0, },  "दि" }, /* da + i */
+  { {   GDK_d,   GDK_U,       0,       0,       0,       0, },  "दू" }, /* da + U */
+
+  { {   GDK_c,   GDK_h,       0,       0,       0,       0, },  "छ्" }, /* cha + virama */
+  { {   GDK_c,   GDK_h,   GDK_a,       0,       0,       0, },  "छ" }, /* cha */
+  { {   GDK_c,   GDK_h,   GDK_e,       0,       0,       0, },  "छे" }, /* cha + e */
+  { {   GDK_c,   GDK_h,   GDK_A,       0,       0,       0, },  "छा" }, /* cha + A */
+  { {   GDK_c,   GDK_h,   GDK_r,       0,       0,       0, },  "छृ" }, /* cha + r */
+  { {   GDK_c,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "छी" }, /* cha + ii */
+  { {   GDK_c,   GDK_h,   GDK_E,       0,       0,       0, },  "छै" }, /* cha + E */
+  { {   GDK_c,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "छॄ" }, /* cha + rr */
+  { {   GDK_c,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "छौ" }, /* cha + au */
+  { {   GDK_c,   GDK_h,   GDK_u,       0,       0,       0, },  "छु" }, /* cha + u */
+  { {   GDK_c,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "छू" }, /* cha + uu */
+  { {   GDK_c,   GDK_h,   GDK_R,       0,       0,       0, },  "छॄ" }, /* cha + R */
+  { {   GDK_c,   GDK_h,   GDK_I,       0,       0,       0, },  "छी" }, /* cha + I */
+  { {   GDK_c,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "छै" }, /* cha + ai */
+  { {   GDK_c,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "छा" }, /* cha + aa */
+  { {   GDK_c,   GDK_h,   GDK_o,       0,       0,       0, },  "छो" }, /* cha + o */
+  { {   GDK_c,   GDK_h,   GDK_i,       0,       0,       0, },  "छि" }, /* cha + i */
+  { {   GDK_c,   GDK_h,   GDK_U,       0,       0,       0, },  "छू" }, /* cha + U */
+
+  { {   GDK_B,       0,       0,       0,       0,       0, },  "भ्" }, /* Ba + virama */
+  { {   GDK_B,   GDK_a,       0,       0,       0,       0, },  "भ" }, /* Ba */
+  { {   GDK_B,   GDK_e,       0,       0,       0,       0, },  "भे" }, /* Ba + e */
+  { {   GDK_B,   GDK_A,       0,       0,       0,       0, },  "भा" }, /* Ba + A */
+  { {   GDK_B,   GDK_r,       0,       0,       0,       0, },  "भृ" }, /* Ba + r */
+  { {   GDK_B,   GDK_i,   GDK_i,       0,       0,       0, },  "भी" }, /* Ba + ii */
+  { {   GDK_B,   GDK_E,       0,       0,       0,       0, },  "भै" }, /* Ba + E */
+  { {   GDK_B,   GDK_r,   GDK_r,       0,       0,       0, },  "भॄ" }, /* Ba + rr */
+  { {   GDK_B,   GDK_a,   GDK_u,       0,       0,       0, },  "भौ" }, /* Ba + au */
+  { {   GDK_B,   GDK_u,       0,       0,       0,       0, },  "भु" }, /* Ba + u */
+  { {   GDK_B,   GDK_u,   GDK_u,       0,       0,       0, },  "भू" }, /* Ba + uu */
+  { {   GDK_B,   GDK_R,       0,       0,       0,       0, },  "भॄ" }, /* Ba + R */
+  { {   GDK_B,   GDK_I,       0,       0,       0,       0, },  "भी" }, /* Ba + I */
+  { {   GDK_B,   GDK_a,   GDK_i,       0,       0,       0, },  "भै" }, /* Ba + ai */
+  { {   GDK_B,   GDK_a,   GDK_a,       0,       0,       0, },  "भा" }, /* Ba + aa */
+  { {   GDK_B,   GDK_o,       0,       0,       0,       0, },  "भो" }, /* Ba + o */
+  { {   GDK_B,   GDK_i,       0,       0,       0,       0, },  "भि" }, /* Ba + i */
+  { {   GDK_B,   GDK_U,       0,       0,       0,       0, },  "भू" }, /* Ba + U */
+
+  { {   GDK_m,       0,       0,       0,       0,       0, },  "म्" }, /* ma + virama */
+  { {   GDK_m,   GDK_a,       0,       0,       0,       0, },  "म" }, /* ma */
+  { {   GDK_m,   GDK_e,       0,       0,       0,       0, },  "मे" }, /* ma + e */
+  { {   GDK_m,   GDK_A,       0,       0,       0,       0, },  "मा" }, /* ma + A */
+  { {   GDK_m,   GDK_r,       0,       0,       0,       0, },  "मृ" }, /* ma + r */
+  { {   GDK_m,   GDK_i,   GDK_i,       0,       0,       0, },  "मी" }, /* ma + ii */
+  { {   GDK_m,   GDK_E,       0,       0,       0,       0, },  "मै" }, /* ma + E */
+  { {   GDK_m,   GDK_r,   GDK_r,       0,       0,       0, },  "मॄ" }, /* ma + rr */
+  { {   GDK_m,   GDK_a,   GDK_u,       0,       0,       0, },  "मौ" }, /* ma + au */
+  { {   GDK_m,   GDK_u,       0,       0,       0,       0, },  "मु" }, /* ma + u */
+  { {   GDK_m,   GDK_u,   GDK_u,       0,       0,       0, },  "मू" }, /* ma + uu */
+  { {   GDK_m,   GDK_R,       0,       0,       0,       0, },  "मॄ" }, /* ma + R */
+  { {   GDK_m,   GDK_I,       0,       0,       0,       0, },  "मी" }, /* ma + I */
+  { {   GDK_m,   GDK_a,   GDK_i,       0,       0,       0, },  "मै" }, /* ma + ai */
+  { {   GDK_m,   GDK_a,   GDK_a,       0,       0,       0, },  "मा" }, /* ma + aa */
+  { {   GDK_m,   GDK_o,       0,       0,       0,       0, },  "मो" }, /* ma + o */
+  { {   GDK_m,   GDK_i,       0,       0,       0,       0, },  "मि" }, /* ma + i */
+  { {   GDK_m,   GDK_U,       0,       0,       0,       0, },  "मू" }, /* ma + U */
+
+  { {   GDK_t,   GDK_t,   GDK_h,       0,       0,       0, },  "ठ्" }, /* ttha + virama */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_a,       0,       0, },  "ठ" }, /* ttha */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_e,       0,       0, },  "ठे" }, /* ttha + e */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_A,       0,       0, },  "ठा" }, /* ttha + A */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_r,       0,       0, },  "ठृ" }, /* ttha + r */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_i,   GDK_i,       0, },  "ठी" }, /* ttha + ii */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_E,       0,       0, },  "ठै" }, /* ttha + E */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_r,   GDK_r,       0, },  "ठॄ" }, /* ttha + rr */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_a,   GDK_u,       0, },  "ठौ" }, /* ttha + au */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_u,       0,       0, },  "ठु" }, /* ttha + u */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_u,   GDK_u,       0, },  "ठू" }, /* ttha + uu */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_R,       0,       0, },  "ठॄ" }, /* ttha + R */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_I,       0,       0, },  "ठी" }, /* ttha + I */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_a,   GDK_i,       0, },  "ठै" }, /* ttha + ai */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_a,   GDK_a,       0, },  "ठा" }, /* ttha + aa */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_o,       0,       0, },  "ठो" }, /* ttha + o */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_i,       0,       0, },  "ठि" }, /* ttha + i */
+  { {   GDK_t,   GDK_t,   GDK_h,   GDK_U,       0,       0, },  "ठू" }, /* ttha + U */
+
+  { {   GDK_g,   GDK_h,       0,       0,       0,       0, },  "घ्" }, /* gha + virama */
+  { {   GDK_g,   GDK_h,   GDK_a,       0,       0,       0, },  "घ" }, /* gha */
+  { {   GDK_g,   GDK_h,   GDK_e,       0,       0,       0, },  "घे" }, /* gha + e */
+  { {   GDK_g,   GDK_h,   GDK_A,       0,       0,       0, },  "घा" }, /* gha + A */
+  { {   GDK_g,   GDK_h,   GDK_r,       0,       0,       0, },  "घृ" }, /* gha + r */
+  { {   GDK_g,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "घी" }, /* gha + ii */
+  { {   GDK_g,   GDK_h,   GDK_E,       0,       0,       0, },  "घै" }, /* gha + E */
+  { {   GDK_g,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "घॄ" }, /* gha + rr */
+  { {   GDK_g,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "घौ" }, /* gha + au */
+  { {   GDK_g,   GDK_h,   GDK_u,       0,       0,       0, },  "घु" }, /* gha + u */
+  { {   GDK_g,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "घू" }, /* gha + uu */
+  { {   GDK_g,   GDK_h,   GDK_R,       0,       0,       0, },  "घॄ" }, /* gha + R */
+  { {   GDK_g,   GDK_h,   GDK_I,       0,       0,       0, },  "घी" }, /* gha + I */
+  { {   GDK_g,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "घै" }, /* gha + ai */
+  { {   GDK_g,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "घा" }, /* gha + aa */
+  { {   GDK_g,   GDK_h,   GDK_o,       0,       0,       0, },  "घो" }, /* gha + o */
+  { {   GDK_g,   GDK_h,   GDK_i,       0,       0,       0, },  "घि" }, /* gha + i */
+  { {   GDK_g,   GDK_h,   GDK_U,       0,       0,       0, },  "घू" }, /* gha + U */
+
+  { {   GDK_r,       0,       0,       0,       0,       0, },  "र्" }, /* ra + virama */
+  { {   GDK_r,   GDK_a,       0,       0,       0,       0, },  "र" }, /* ra */
+  { {   GDK_r,   GDK_e,       0,       0,       0,       0, },  "रे" }, /* ra + e */
+  { {   GDK_r,   GDK_A,       0,       0,       0,       0, },  "रा" }, /* ra + A */
+  { {   GDK_r,   GDK_r,       0,       0,       0,       0, },  "रृ" }, /* ra + r */
+  { {   GDK_r,   GDK_i,   GDK_i,       0,       0,       0, },  "री" }, /* ra + ii */
+  { {   GDK_r,   GDK_E,       0,       0,       0,       0, },  "रै" }, /* ra + E */
+  { {   GDK_r,   GDK_r,   GDK_r,       0,       0,       0, },  "रॄ" }, /* ra + rr */
+  { {   GDK_r,   GDK_a,   GDK_u,       0,       0,       0, },  "रौ" }, /* ra + au */
+  { {   GDK_r,   GDK_u,       0,       0,       0,       0, },  "रु" }, /* ra + u */
+  { {   GDK_r,   GDK_u,   GDK_u,       0,       0,       0, },  "रू" }, /* ra + uu */
+  { {   GDK_r,   GDK_R,       0,       0,       0,       0, },  "रॄ" }, /* ra + R */
+  { {   GDK_r,   GDK_I,       0,       0,       0,       0, },  "री" }, /* ra + I */
+  { {   GDK_r,   GDK_a,   GDK_i,       0,       0,       0, },  "रै" }, /* ra + ai */
+  { {   GDK_r,   GDK_a,   GDK_a,       0,       0,       0, },  "रा" }, /* ra + aa */
+  { {   GDK_r,   GDK_o,       0,       0,       0,       0, },  "रो" }, /* ra + o */
+  { {   GDK_r,   GDK_i,       0,       0,       0,       0, },  "रि" }, /* ra + i */
+  { {   GDK_r,   GDK_U,       0,       0,       0,       0, },  "रू" }, /* ra + U */
+
+  { {   GDK_s,       0,       0,       0,       0,       0, },  "स्" }, /* sa + virama */
+  { {   GDK_s,   GDK_a,       0,       0,       0,       0, },  "स" }, /* sa */
+  { {   GDK_s,   GDK_e,       0,       0,       0,       0, },  "से" }, /* sa + e */
+  { {   GDK_s,   GDK_A,       0,       0,       0,       0, },  "सा" }, /* sa + A */
+  { {   GDK_s,   GDK_r,       0,       0,       0,       0, },  "सृ" }, /* sa + r */
+  { {   GDK_s,   GDK_i,   GDK_i,       0,       0,       0, },  "सी" }, /* sa + ii */
+  { {   GDK_s,   GDK_E,       0,       0,       0,       0, },  "सै" }, /* sa + E */
+  { {   GDK_s,   GDK_r,   GDK_r,       0,       0,       0, },  "सॄ" }, /* sa + rr */
+  { {   GDK_s,   GDK_a,   GDK_u,       0,       0,       0, },  "सौ" }, /* sa + au */
+  { {   GDK_s,   GDK_u,       0,       0,       0,       0, },  "सु" }, /* sa + u */
+  { {   GDK_s,   GDK_u,   GDK_u,       0,       0,       0, },  "सू" }, /* sa + uu */
+  { {   GDK_s,   GDK_R,       0,       0,       0,       0, },  "सॄ" }, /* sa + R */
+  { {   GDK_s,   GDK_I,       0,       0,       0,       0, },  "सी" }, /* sa + I */
+  { {   GDK_s,   GDK_a,   GDK_i,       0,       0,       0, },  "सै" }, /* sa + ai */
+  { {   GDK_s,   GDK_a,   GDK_a,       0,       0,       0, },  "सा" }, /* sa + aa */
+  { {   GDK_s,   GDK_o,       0,       0,       0,       0, },  "सो" }, /* sa + o */
+  { {   GDK_s,   GDK_i,       0,       0,       0,       0, },  "सि" }, /* sa + i */
+  { {   GDK_s,   GDK_U,       0,       0,       0,       0, },  "सू" }, /* sa + U */
+
+  { {   GDK_t,       0,       0,       0,       0,       0, },  "त्" }, /* ta + virama */
+  { {   GDK_t,   GDK_a,       0,       0,       0,       0, },  "त" }, /* ta */
+  { {   GDK_t,   GDK_e,       0,       0,       0,       0, },  "ते" }, /* ta + e */
+  { {   GDK_t,   GDK_A,       0,       0,       0,       0, },  "ता" }, /* ta + A */
+  { {   GDK_t,   GDK_r,       0,       0,       0,       0, },  "तृ" }, /* ta + r */
+  { {   GDK_t,   GDK_i,   GDK_i,       0,       0,       0, },  "ती" }, /* ta + ii */
+  { {   GDK_t,   GDK_E,       0,       0,       0,       0, },  "तै" }, /* ta + E */
+  { {   GDK_t,   GDK_r,   GDK_r,       0,       0,       0, },  "तॄ" }, /* ta + rr */
+  { {   GDK_t,   GDK_a,   GDK_u,       0,       0,       0, },  "तौ" }, /* ta + au */
+  { {   GDK_t,   GDK_u,       0,       0,       0,       0, },  "तु" }, /* ta + u */
+  { {   GDK_t,   GDK_u,   GDK_u,       0,       0,       0, },  "तू" }, /* ta + uu */
+  { {   GDK_t,   GDK_R,       0,       0,       0,       0, },  "तॄ" }, /* ta + R */
+  { {   GDK_t,   GDK_I,       0,       0,       0,       0, },  "ती" }, /* ta + I */
+  { {   GDK_t,   GDK_a,   GDK_i,       0,       0,       0, },  "तै" }, /* ta + ai */
+  { {   GDK_t,   GDK_a,   GDK_a,       0,       0,       0, },  "ता" }, /* ta + aa */
+  { {   GDK_t,   GDK_o,       0,       0,       0,       0, },  "तो" }, /* ta + o */
+  { {   GDK_t,   GDK_i,       0,       0,       0,       0, },  "ति" }, /* ta + i */
+  { {   GDK_t,   GDK_U,       0,       0,       0,       0, },  "तू" }, /* ta + U */
+
+  { {   GDK_t,   GDK_t,       0,       0,       0,       0, },  "ट्" }, /* tta + virama */
+  { {   GDK_t,   GDK_t,   GDK_a,       0,       0,       0, },  "ट" }, /* tta */
+  { {   GDK_t,   GDK_t,   GDK_e,       0,       0,       0, },  "टे" }, /* tta + e */
+  { {   GDK_t,   GDK_t,   GDK_A,       0,       0,       0, },  "टा" }, /* tta + A */
+  { {   GDK_t,   GDK_t,   GDK_r,       0,       0,       0, },  "टृ" }, /* tta + r */
+  { {   GDK_t,   GDK_t,   GDK_i,   GDK_i,       0,       0, },  "टी" }, /* tta + ii */
+  { {   GDK_t,   GDK_t,   GDK_E,       0,       0,       0, },  "टै" }, /* tta + E */
+  { {   GDK_t,   GDK_t,   GDK_r,   GDK_r,       0,       0, },  "टॄ" }, /* tta + rr */
+  { {   GDK_t,   GDK_t,   GDK_a,   GDK_u,       0,       0, },  "टौ" }, /* tta + au */
+  { {   GDK_t,   GDK_t,   GDK_u,       0,       0,       0, },  "टु" }, /* tta + u */
+  { {   GDK_t,   GDK_t,   GDK_u,   GDK_u,       0,       0, },  "टू" }, /* tta + uu */
+  { {   GDK_t,   GDK_t,   GDK_R,       0,       0,       0, },  "टॄ" }, /* tta + R */
+  { {   GDK_t,   GDK_t,   GDK_I,       0,       0,       0, },  "टी" }, /* tta + I */
+  { {   GDK_t,   GDK_t,   GDK_a,   GDK_i,       0,       0, },  "टै" }, /* tta + ai */
+  { {   GDK_t,   GDK_t,   GDK_a,   GDK_a,       0,       0, },  "टा" }, /* tta + aa */
+  { {   GDK_t,   GDK_t,   GDK_o,       0,       0,       0, },  "टो" }, /* tta + o */
+  { {   GDK_t,   GDK_t,   GDK_i,       0,       0,       0, },  "टि" }, /* tta + i */
+  { {   GDK_t,   GDK_t,   GDK_U,       0,       0,       0, },  "टू" }, /* tta + U */
+
+  { {   GDK_r,   GDK_r,       0,       0,       0,       0, },  "ऱ्" }, /* rra + virama */
+  { {   GDK_r,   GDK_r,   GDK_a,       0,       0,       0, },  "ऱ" }, /* rra */
+  { {   GDK_r,   GDK_r,   GDK_e,       0,       0,       0, },  "ऱे" }, /* rra + e */
+  { {   GDK_r,   GDK_r,   GDK_A,       0,       0,       0, },  "ऱा" }, /* rra + A */
+  { {   GDK_r,   GDK_r,   GDK_r,       0,       0,       0, },  "ऱृ" }, /* rra + r */
+  { {   GDK_r,   GDK_r,   GDK_i,   GDK_i,       0,       0, },  "ऱी" }, /* rra + ii */
+  { {   GDK_r,   GDK_r,   GDK_E,       0,       0,       0, },  "ऱै" }, /* rra + E */
+  { {   GDK_r,   GDK_r,   GDK_r,   GDK_r,       0,       0, },  "ऱॄ" }, /* rra + rr */
+  { {   GDK_r,   GDK_r,   GDK_a,   GDK_u,       0,       0, },  "ऱौ" }, /* rra + au */
+  { {   GDK_r,   GDK_r,   GDK_u,       0,       0,       0, },  "ऱु" }, /* rra + u */
+  { {   GDK_r,   GDK_r,   GDK_u,   GDK_u,       0,       0, },  "ऱू" }, /* rra + uu */
+  { {   GDK_r,   GDK_r,   GDK_R,       0,       0,       0, },  "ऱॄ" }, /* rra + R */
+  { {   GDK_r,   GDK_r,   GDK_I,       0,       0,       0, },  "ऱी" }, /* rra + I */
+  { {   GDK_r,   GDK_r,   GDK_a,   GDK_i,       0,       0, },  "ऱै" }, /* rra + ai */
+  { {   GDK_r,   GDK_r,   GDK_a,   GDK_a,       0,       0, },  "ऱा" }, /* rra + aa */
+  { {   GDK_r,   GDK_r,   GDK_o,       0,       0,       0, },  "ऱो" }, /* rra + o */
+  { {   GDK_r,   GDK_r,   GDK_i,       0,       0,       0, },  "ऱि" }, /* rra + i */
+  { {   GDK_r,   GDK_r,   GDK_U,       0,       0,       0, },  "ऱू" }, /* rra + U */
+
+  { {   GDK_l,   GDK_l,   GDK_l,       0,       0,       0, },  "ऴ्" }, /* llla + virama */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_a,       0,       0, },  "ऴ" }, /* llla */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_e,       0,       0, },  "ऴे" }, /* llla + e */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_A,       0,       0, },  "ऴा" }, /* llla + A */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_r,       0,       0, },  "ऴृ" }, /* llla + r */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_i,   GDK_i,       0, },  "ऴी" }, /* llla + ii */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_E,       0,       0, },  "ऴै" }, /* llla + E */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_r,   GDK_r,       0, },  "ऴॄ" }, /* llla + rr */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_a,   GDK_u,       0, },  "ऴौ" }, /* llla + au */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_u,       0,       0, },  "ऴु" }, /* llla + u */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_u,   GDK_u,       0, },  "ऴू" }, /* llla + uu */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_R,       0,       0, },  "ऴॄ" }, /* llla + R */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_I,       0,       0, },  "ऴी" }, /* llla + I */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_a,   GDK_i,       0, },  "ऴै" }, /* llla + ai */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_a,   GDK_a,       0, },  "ऴा" }, /* llla + aa */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_o,       0,       0, },  "ऴो" }, /* llla + o */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_i,       0,       0, },  "ऴि" }, /* llla + i */
+  { {   GDK_l,   GDK_l,   GDK_l,   GDK_U,       0,       0, },  "ऴू" }, /* llla + U */
+
+  { {   GDK_n,   GDK_y,       0,       0,       0,       0, },  "ञ्" }, /* nya + virama */
+  { {   GDK_n,   GDK_y,   GDK_a,       0,       0,       0, },  "ञ" }, /* nya */
+  { {   GDK_n,   GDK_y,   GDK_e,       0,       0,       0, },  "ञे" }, /* nya + e */
+  { {   GDK_n,   GDK_y,   GDK_A,       0,       0,       0, },  "ञा" }, /* nya + A */
+  { {   GDK_n,   GDK_y,   GDK_r,       0,       0,       0, },  "ञृ" }, /* nya + r */
+  { {   GDK_n,   GDK_y,   GDK_i,   GDK_i,       0,       0, },  "ञी" }, /* nya + ii */
+  { {   GDK_n,   GDK_y,   GDK_E,       0,       0,       0, },  "ञै" }, /* nya + E */
+  { {   GDK_n,   GDK_y,   GDK_r,   GDK_r,       0,       0, },  "ञॄ" }, /* nya + rr */
+  { {   GDK_n,   GDK_y,   GDK_a,   GDK_u,       0,       0, },  "ञौ" }, /* nya + au */
+  { {   GDK_n,   GDK_y,   GDK_u,       0,       0,       0, },  "ञु" }, /* nya + u */
+  { {   GDK_n,   GDK_y,   GDK_u,   GDK_u,       0,       0, },  "ञू" }, /* nya + uu */
+  { {   GDK_n,   GDK_y,   GDK_R,       0,       0,       0, },  "ञॄ" }, /* nya + R */
+  { {   GDK_n,   GDK_y,   GDK_I,       0,       0,       0, },  "ञी" }, /* nya + I */
+  { {   GDK_n,   GDK_y,   GDK_a,   GDK_i,       0,       0, },  "ञै" }, /* nya + ai */
+  { {   GDK_n,   GDK_y,   GDK_a,   GDK_a,       0,       0, },  "ञा" }, /* nya + aa */
+  { {   GDK_n,   GDK_y,   GDK_o,       0,       0,       0, },  "ञो" }, /* nya + o */
+  { {   GDK_n,   GDK_y,   GDK_i,       0,       0,       0, },  "ञि" }, /* nya + i */
+  { {   GDK_n,   GDK_y,   GDK_U,       0,       0,       0, },  "ञू" }, /* nya + U */
+
+  { {   GDK_s,   GDK_h,       0,       0,       0,       0, },  "श्" }, /* sha + virama */
+  { {   GDK_s,   GDK_h,   GDK_a,       0,       0,       0, },  "श" }, /* sha */
+  { {   GDK_s,   GDK_h,   GDK_e,       0,       0,       0, },  "शे" }, /* sha + e */
+  { {   GDK_s,   GDK_h,   GDK_A,       0,       0,       0, },  "शा" }, /* sha + A */
+  { {   GDK_s,   GDK_h,   GDK_r,       0,       0,       0, },  "शृ" }, /* sha + r */
+  { {   GDK_s,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "शी" }, /* sha + ii */
+  { {   GDK_s,   GDK_h,   GDK_E,       0,       0,       0, },  "शै" }, /* sha + E */
+  { {   GDK_s,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "शॄ" }, /* sha + rr */
+  { {   GDK_s,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "शौ" }, /* sha + au */
+  { {   GDK_s,   GDK_h,   GDK_u,       0,       0,       0, },  "शु" }, /* sha + u */
+  { {   GDK_s,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "शू" }, /* sha + uu */
+  { {   GDK_s,   GDK_h,   GDK_R,       0,       0,       0, },  "शॄ" }, /* sha + R */
+  { {   GDK_s,   GDK_h,   GDK_I,       0,       0,       0, },  "शी" }, /* sha + I */
+  { {   GDK_s,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "शै" }, /* sha + ai */
+  { {   GDK_s,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "शा" }, /* sha + aa */
+  { {   GDK_s,   GDK_h,   GDK_o,       0,       0,       0, },  "शो" }, /* sha + o */
+  { {   GDK_s,   GDK_h,   GDK_i,       0,       0,       0, },  "शि" }, /* sha + i */
+  { {   GDK_s,   GDK_h,   GDK_U,       0,       0,       0, },  "शू" }, /* sha + U */
+
+  { {   GDK_J,       0,       0,       0,       0,       0, },  "झ्" }, /* Ja + virama */
+  { {   GDK_J,   GDK_a,       0,       0,       0,       0, },  "झ" }, /* Ja */
+  { {   GDK_J,   GDK_e,       0,       0,       0,       0, },  "झे" }, /* Ja + e */
+  { {   GDK_J,   GDK_A,       0,       0,       0,       0, },  "झा" }, /* Ja + A */
+  { {   GDK_J,   GDK_r,       0,       0,       0,       0, },  "झृ" }, /* Ja + r */
+  { {   GDK_J,   GDK_i,   GDK_i,       0,       0,       0, },  "झी" }, /* Ja + ii */
+  { {   GDK_J,   GDK_E,       0,       0,       0,       0, },  "झै" }, /* Ja + E */
+  { {   GDK_J,   GDK_r,   GDK_r,       0,       0,       0, },  "झॄ" }, /* Ja + rr */
+  { {   GDK_J,   GDK_a,   GDK_u,       0,       0,       0, },  "झौ" }, /* Ja + au */
+  { {   GDK_J,   GDK_u,       0,       0,       0,       0, },  "झु" }, /* Ja + u */
+  { {   GDK_J,   GDK_u,   GDK_u,       0,       0,       0, },  "झू" }, /* Ja + uu */
+  { {   GDK_J,   GDK_R,       0,       0,       0,       0, },  "झॄ" }, /* Ja + R */
+  { {   GDK_J,   GDK_I,       0,       0,       0,       0, },  "झी" }, /* Ja + I */
+  { {   GDK_J,   GDK_a,   GDK_i,       0,       0,       0, },  "झै" }, /* Ja + ai */
+  { {   GDK_J,   GDK_a,   GDK_a,       0,       0,       0, },  "झा" }, /* Ja + aa */
+  { {   GDK_J,   GDK_o,       0,       0,       0,       0, },  "झो" }, /* Ja + o */
+  { {   GDK_J,   GDK_i,       0,       0,       0,       0, },  "झि" }, /* Ja + i */
+  { {   GDK_J,   GDK_U,       0,       0,       0,       0, },  "झू" }, /* Ja + U */
+
+  { {   GDK_b,   GDK_h,       0,       0,       0,       0, },  "भ्" }, /* bha + virama */
+  { {   GDK_b,   GDK_h,   GDK_a,       0,       0,       0, },  "भ" }, /* bha */
+  { {   GDK_b,   GDK_h,   GDK_e,       0,       0,       0, },  "भे" }, /* bha + e */
+  { {   GDK_b,   GDK_h,   GDK_A,       0,       0,       0, },  "भा" }, /* bha + A */
+  { {   GDK_b,   GDK_h,   GDK_r,       0,       0,       0, },  "भृ" }, /* bha + r */
+  { {   GDK_b,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "भी" }, /* bha + ii */
+  { {   GDK_b,   GDK_h,   GDK_E,       0,       0,       0, },  "भै" }, /* bha + E */
+  { {   GDK_b,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "भॄ" }, /* bha + rr */
+  { {   GDK_b,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "भौ" }, /* bha + au */
+  { {   GDK_b,   GDK_h,   GDK_u,       0,       0,       0, },  "भु" }, /* bha + u */
+  { {   GDK_b,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "भू" }, /* bha + uu */
+  { {   GDK_b,   GDK_h,   GDK_R,       0,       0,       0, },  "भॄ" }, /* bha + R */
+  { {   GDK_b,   GDK_h,   GDK_I,       0,       0,       0, },  "भी" }, /* bha + I */
+  { {   GDK_b,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "भै" }, /* bha + ai */
+  { {   GDK_b,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "भा" }, /* bha + aa */
+  { {   GDK_b,   GDK_h,   GDK_o,       0,       0,       0, },  "भो" }, /* bha + o */
+  { {   GDK_b,   GDK_h,   GDK_i,       0,       0,       0, },  "भि" }, /* bha + i */
+  { {   GDK_b,   GDK_h,   GDK_U,       0,       0,       0, },  "भू" }, /* bha + U */
+
+  { {   GDK_n,   GDK_n,       0,       0,       0,       0, },  "ण्" }, /* nna + virama */
+  { {   GDK_n,   GDK_n,   GDK_a,       0,       0,       0, },  "ण" }, /* nna */
+  { {   GDK_n,   GDK_n,   GDK_e,       0,       0,       0, },  "णे" }, /* nna + e */
+  { {   GDK_n,   GDK_n,   GDK_A,       0,       0,       0, },  "णा" }, /* nna + A */
+  { {   GDK_n,   GDK_n,   GDK_r,       0,       0,       0, },  "णृ" }, /* nna + r */
+  { {   GDK_n,   GDK_n,   GDK_i,   GDK_i,       0,       0, },  "णी" }, /* nna + ii */
+  { {   GDK_n,   GDK_n,   GDK_E,       0,       0,       0, },  "णै" }, /* nna + E */
+  { {   GDK_n,   GDK_n,   GDK_r,   GDK_r,       0,       0, },  "णॄ" }, /* nna + rr */
+  { {   GDK_n,   GDK_n,   GDK_a,   GDK_u,       0,       0, },  "णौ" }, /* nna + au */
+  { {   GDK_n,   GDK_n,   GDK_u,       0,       0,       0, },  "णु" }, /* nna + u */
+  { {   GDK_n,   GDK_n,   GDK_u,   GDK_u,       0,       0, },  "णू" }, /* nna + uu */
+  { {   GDK_n,   GDK_n,   GDK_R,       0,       0,       0, },  "णॄ" }, /* nna + R */
+  { {   GDK_n,   GDK_n,   GDK_I,       0,       0,       0, },  "णी" }, /* nna + I */
+  { {   GDK_n,   GDK_n,   GDK_a,   GDK_i,       0,       0, },  "णै" }, /* nna + ai */
+  { {   GDK_n,   GDK_n,   GDK_a,   GDK_a,       0,       0, },  "णा" }, /* nna + aa */
+  { {   GDK_n,   GDK_n,   GDK_o,       0,       0,       0, },  "णो" }, /* nna + o */
+  { {   GDK_n,   GDK_n,   GDK_i,       0,       0,       0, },  "णि" }, /* nna + i */
+  { {   GDK_n,   GDK_n,   GDK_U,       0,       0,       0, },  "णू" }, /* nna + U */
+
+  { {   GDK_j,   GDK_h,       0,       0,       0,       0, },  "झ्" }, /* jha + virama */
+  { {   GDK_j,   GDK_h,   GDK_a,       0,       0,       0, },  "झ" }, /* jha */
+  { {   GDK_j,   GDK_h,   GDK_e,       0,       0,       0, },  "झे" }, /* jha + e */
+  { {   GDK_j,   GDK_h,   GDK_A,       0,       0,       0, },  "झा" }, /* jha + A */
+  { {   GDK_j,   GDK_h,   GDK_r,       0,       0,       0, },  "झृ" }, /* jha + r */
+  { {   GDK_j,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "झी" }, /* jha + ii */
+  { {   GDK_j,   GDK_h,   GDK_E,       0,       0,       0, },  "झै" }, /* jha + E */
+  { {   GDK_j,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "झॄ" }, /* jha + rr */
+  { {   GDK_j,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "झौ" }, /* jha + au */
+  { {   GDK_j,   GDK_h,   GDK_u,       0,       0,       0, },  "झु" }, /* jha + u */
+  { {   GDK_j,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "झू" }, /* jha + uu */
+  { {   GDK_j,   GDK_h,   GDK_R,       0,       0,       0, },  "झॄ" }, /* jha + R */
+  { {   GDK_j,   GDK_h,   GDK_I,       0,       0,       0, },  "झी" }, /* jha + I */
+  { {   GDK_j,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "झै" }, /* jha + ai */
+  { {   GDK_j,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "झा" }, /* jha + aa */
+  { {   GDK_j,   GDK_h,   GDK_o,       0,       0,       0, },  "झो" }, /* jha + o */
+  { {   GDK_j,   GDK_h,   GDK_i,       0,       0,       0, },  "झि" }, /* jha + i */
+  { {   GDK_j,   GDK_h,   GDK_U,       0,       0,       0, },  "झू" }, /* jha + U */
+
+  { {   GDK_W,       0,       0,       0,       0,       0, },  "द्व्" }, /* Wa + virama */
+  { {   GDK_W,   GDK_a,       0,       0,       0,       0, },  "द्व" }, /* Wa */
+  { {   GDK_W,   GDK_e,       0,       0,       0,       0, },  "द्वे" }, /* Wa + e */
+  { {   GDK_W,   GDK_A,       0,       0,       0,       0, },  "द्वा" }, /* Wa + A */
+  { {   GDK_W,   GDK_r,       0,       0,       0,       0, },  "द्वृ" }, /* Wa + r */
+  { {   GDK_W,   GDK_i,   GDK_i,       0,       0,       0, },  "द्वी" }, /* Wa + ii */
+  { {   GDK_W,   GDK_E,       0,       0,       0,       0, },  "द्वै" }, /* Wa + E */
+  { {   GDK_W,   GDK_r,   GDK_r,       0,       0,       0, },  "द्वॄ" }, /* Wa + rr */
+  { {   GDK_W,   GDK_a,   GDK_u,       0,       0,       0, },  "द्वौ" }, /* Wa + au */
+  { {   GDK_W,   GDK_u,       0,       0,       0,       0, },  "द्वु" }, /* Wa + u */
+  { {   GDK_W,   GDK_u,   GDK_u,       0,       0,       0, },  "द्वू" }, /* Wa + uu */
+  { {   GDK_W,   GDK_R,       0,       0,       0,       0, },  "द्वॄ" }, /* Wa + R */
+  { {   GDK_W,   GDK_I,       0,       0,       0,       0, },  "द्वी" }, /* Wa + I */
+  { {   GDK_W,   GDK_a,   GDK_i,       0,       0,       0, },  "द्वै" }, /* Wa + ai */
+  { {   GDK_W,   GDK_a,   GDK_a,       0,       0,       0, },  "द्वा" }, /* Wa + aa */
+  { {   GDK_W,   GDK_o,       0,       0,       0,       0, },  "द्वो" }, /* Wa + o */
+  { {   GDK_W,   GDK_i,       0,       0,       0,       0, },  "द्वि" }, /* Wa + i */
+  { {   GDK_W,   GDK_U,       0,       0,       0,       0, },  "द्वू" }, /* Wa + U */
+
+  { {   GDK_C,       0,       0,       0,       0,       0, },  "छ्" }, /* Ca + virama */
+  { {   GDK_C,   GDK_a,       0,       0,       0,       0, },  "छ" }, /* Ca */
+  { {   GDK_C,   GDK_e,       0,       0,       0,       0, },  "छे" }, /* Ca + e */
+  { {   GDK_C,   GDK_A,       0,       0,       0,       0, },  "छा" }, /* Ca + A */
+  { {   GDK_C,   GDK_r,       0,       0,       0,       0, },  "छृ" }, /* Ca + r */
+  { {   GDK_C,   GDK_i,   GDK_i,       0,       0,       0, },  "छी" }, /* Ca + ii */
+  { {   GDK_C,   GDK_E,       0,       0,       0,       0, },  "छै" }, /* Ca + E */
+  { {   GDK_C,   GDK_r,   GDK_r,       0,       0,       0, },  "छॄ" }, /* Ca + rr */
+  { {   GDK_C,   GDK_a,   GDK_u,       0,       0,       0, },  "छौ" }, /* Ca + au */
+  { {   GDK_C,   GDK_u,       0,       0,       0,       0, },  "छु" }, /* Ca + u */
+  { {   GDK_C,   GDK_u,   GDK_u,       0,       0,       0, },  "छू" }, /* Ca + uu */
+  { {   GDK_C,   GDK_R,       0,       0,       0,       0, },  "छॄ" }, /* Ca + R */
+  { {   GDK_C,   GDK_I,       0,       0,       0,       0, },  "छी" }, /* Ca + I */
+  { {   GDK_C,   GDK_a,   GDK_i,       0,       0,       0, },  "छै" }, /* Ca + ai */
+  { {   GDK_C,   GDK_a,   GDK_a,       0,       0,       0, },  "छा" }, /* Ca + aa */
+  { {   GDK_C,   GDK_o,       0,       0,       0,       0, },  "छो" }, /* Ca + o */
+  { {   GDK_C,   GDK_i,       0,       0,       0,       0, },  "छि" }, /* Ca + i */
+  { {   GDK_C,   GDK_U,       0,       0,       0,       0, },  "छू" }, /* Ca + U */
+
+  { {   GDK_P,       0,       0,       0,       0,       0, },  "फ्" }, /* Pa + virama */
+  { {   GDK_P,   GDK_a,       0,       0,       0,       0, },  "फ" }, /* Pa */
+  { {   GDK_P,   GDK_e,       0,       0,       0,       0, },  "फे" }, /* Pa + e */
+  { {   GDK_P,   GDK_A,       0,       0,       0,       0, },  "फा" }, /* Pa + A */
+  { {   GDK_P,   GDK_r,       0,       0,       0,       0, },  "फृ" }, /* Pa + r */
+  { {   GDK_P,   GDK_i,   GDK_i,       0,       0,       0, },  "फी" }, /* Pa + ii */
+  { {   GDK_P,   GDK_E,       0,       0,       0,       0, },  "फै" }, /* Pa + E */
+  { {   GDK_P,   GDK_r,   GDK_r,       0,       0,       0, },  "फॄ" }, /* Pa + rr */
+  { {   GDK_P,   GDK_a,   GDK_u,       0,       0,       0, },  "फौ" }, /* Pa + au */
+  { {   GDK_P,   GDK_u,       0,       0,       0,       0, },  "फु" }, /* Pa + u */
+  { {   GDK_P,   GDK_u,   GDK_u,       0,       0,       0, },  "फू" }, /* Pa + uu */
+  { {   GDK_P,   GDK_R,       0,       0,       0,       0, },  "फॄ" }, /* Pa + R */
+  { {   GDK_P,   GDK_I,       0,       0,       0,       0, },  "फी" }, /* Pa + I */
+  { {   GDK_P,   GDK_a,   GDK_i,       0,       0,       0, },  "फै" }, /* Pa + ai */
+  { {   GDK_P,   GDK_a,   GDK_a,       0,       0,       0, },  "फा" }, /* Pa + aa */
+  { {   GDK_P,   GDK_o,       0,       0,       0,       0, },  "फो" }, /* Pa + o */
+  { {   GDK_P,   GDK_i,       0,       0,       0,       0, },  "फि" }, /* Pa + i */
+  { {   GDK_P,   GDK_U,       0,       0,       0,       0, },  "फू" }, /* Pa + U */
+
+  { {   GDK_n,   GDK_g,       0,       0,       0,       0, },  "ङ्" }, /* nga + virama */
+  { {   GDK_n,   GDK_g,   GDK_a,       0,       0,       0, },  "ङ" }, /* nga */
+  { {   GDK_n,   GDK_g,   GDK_e,       0,       0,       0, },  "ङे" }, /* nga + e */
+  { {   GDK_n,   GDK_g,   GDK_A,       0,       0,       0, },  "ङा" }, /* nga + A */
+  { {   GDK_n,   GDK_g,   GDK_r,       0,       0,       0, },  "ङृ" }, /* nga + r */
+  { {   GDK_n,   GDK_g,   GDK_i,   GDK_i,       0,       0, },  "ङी" }, /* nga + ii */
+  { {   GDK_n,   GDK_g,   GDK_E,       0,       0,       0, },  "ङै" }, /* nga + E */
+  { {   GDK_n,   GDK_g,   GDK_r,   GDK_r,       0,       0, },  "ङॄ" }, /* nga + rr */
+  { {   GDK_n,   GDK_g,   GDK_a,   GDK_u,       0,       0, },  "ङौ" }, /* nga + au */
+  { {   GDK_n,   GDK_g,   GDK_u,       0,       0,       0, },  "ङु" }, /* nga + u */
+  { {   GDK_n,   GDK_g,   GDK_u,   GDK_u,       0,       0, },  "ङू" }, /* nga + uu */
+  { {   GDK_n,   GDK_g,   GDK_R,       0,       0,       0, },  "ङॄ" }, /* nga + R */
+  { {   GDK_n,   GDK_g,   GDK_I,       0,       0,       0, },  "ङी" }, /* nga + I */
+  { {   GDK_n,   GDK_g,   GDK_a,   GDK_i,       0,       0, },  "ङै" }, /* nga + ai */
+  { {   GDK_n,   GDK_g,   GDK_a,   GDK_a,       0,       0, },  "ङा" }, /* nga + aa */
+  { {   GDK_n,   GDK_g,   GDK_o,       0,       0,       0, },  "ङो" }, /* nga + o */
+  { {   GDK_n,   GDK_g,   GDK_i,       0,       0,       0, },  "ङि" }, /* nga + i */
+  { {   GDK_n,   GDK_g,   GDK_U,       0,       0,       0, },  "ङू" }, /* nga + U */
+
+  { {   GDK_T,       0,       0,       0,       0,       0, },  "थ्" }, /* Ta + virama */
+  { {   GDK_T,   GDK_a,       0,       0,       0,       0, },  "थ" }, /* Ta */
+  { {   GDK_T,   GDK_e,       0,       0,       0,       0, },  "थे" }, /* Ta + e */
+  { {   GDK_T,   GDK_A,       0,       0,       0,       0, },  "था" }, /* Ta + A */
+  { {   GDK_T,   GDK_r,       0,       0,       0,       0, },  "थृ" }, /* Ta + r */
+  { {   GDK_T,   GDK_i,   GDK_i,       0,       0,       0, },  "थी" }, /* Ta + ii */
+  { {   GDK_T,   GDK_E,       0,       0,       0,       0, },  "थै" }, /* Ta + E */
+  { {   GDK_T,   GDK_r,   GDK_r,       0,       0,       0, },  "थॄ" }, /* Ta + rr */
+  { {   GDK_T,   GDK_a,   GDK_u,       0,       0,       0, },  "थौ" }, /* Ta + au */
+  { {   GDK_T,   GDK_u,       0,       0,       0,       0, },  "थु" }, /* Ta + u */
+  { {   GDK_T,   GDK_u,   GDK_u,       0,       0,       0, },  "थू" }, /* Ta + uu */
+  { {   GDK_T,   GDK_R,       0,       0,       0,       0, },  "थॄ" }, /* Ta + R */
+  { {   GDK_T,   GDK_I,       0,       0,       0,       0, },  "थी" }, /* Ta + I */
+  { {   GDK_T,   GDK_a,   GDK_i,       0,       0,       0, },  "थै" }, /* Ta + ai */
+  { {   GDK_T,   GDK_a,   GDK_a,       0,       0,       0, },  "था" }, /* Ta + aa */
+  { {   GDK_T,   GDK_o,       0,       0,       0,       0, },  "थो" }, /* Ta + o */
+  { {   GDK_T,   GDK_i,       0,       0,       0,       0, },  "थि" }, /* Ta + i */
+  { {   GDK_T,   GDK_U,       0,       0,       0,       0, },  "थू" }, /* Ta + U */
+
+  { {   GDK_h,       0,       0,       0,       0,       0, },  "ह्" }, /* ha + virama */
+  { {   GDK_h,   GDK_a,       0,       0,       0,       0, },  "ह" }, /* ha */
+  { {   GDK_h,   GDK_e,       0,       0,       0,       0, },  "हे" }, /* ha + e */
+  { {   GDK_h,   GDK_A,       0,       0,       0,       0, },  "हा" }, /* ha + A */
+  { {   GDK_h,   GDK_r,       0,       0,       0,       0, },  "हृ" }, /* ha + r */
+  { {   GDK_h,   GDK_i,   GDK_i,       0,       0,       0, },  "ही" }, /* ha + ii */
+  { {   GDK_h,   GDK_E,       0,       0,       0,       0, },  "है" }, /* ha + E */
+  { {   GDK_h,   GDK_r,   GDK_r,       0,       0,       0, },  "हॄ" }, /* ha + rr */
+  { {   GDK_h,   GDK_a,   GDK_u,       0,       0,       0, },  "हौ" }, /* ha + au */
+  { {   GDK_h,   GDK_u,       0,       0,       0,       0, },  "हु" }, /* ha + u */
+  { {   GDK_h,   GDK_u,   GDK_u,       0,       0,       0, },  "हू" }, /* ha + uu */
+  { {   GDK_h,   GDK_R,       0,       0,       0,       0, },  "हॄ" }, /* ha + R */
+  { {   GDK_h,   GDK_I,       0,       0,       0,       0, },  "ही" }, /* ha + I */
+  { {   GDK_h,   GDK_a,   GDK_i,       0,       0,       0, },  "है" }, /* ha + ai */
+  { {   GDK_h,   GDK_a,   GDK_a,       0,       0,       0, },  "हा" }, /* ha + aa */
+  { {   GDK_h,   GDK_o,       0,       0,       0,       0, },  "हो" }, /* ha + o */
+  { {   GDK_h,   GDK_i,       0,       0,       0,       0, },  "हि" }, /* ha + i */
+  { {   GDK_h,   GDK_U,       0,       0,       0,       0, },  "हू" }, /* ha + U */
+
+  { {   GDK_v,       0,       0,       0,       0,       0, },  "व्" }, /* va + virama */
+  { {   GDK_v,   GDK_a,       0,       0,       0,       0, },  "व" }, /* va */
+  { {   GDK_v,   GDK_e,       0,       0,       0,       0, },  "वे" }, /* va + e */
+  { {   GDK_v,   GDK_A,       0,       0,       0,       0, },  "वा" }, /* va + A */
+  { {   GDK_v,   GDK_r,       0,       0,       0,       0, },  "वृ" }, /* va + r */
+  { {   GDK_v,   GDK_i,   GDK_i,       0,       0,       0, },  "वी" }, /* va + ii */
+  { {   GDK_v,   GDK_E,       0,       0,       0,       0, },  "वै" }, /* va + E */
+  { {   GDK_v,   GDK_r,   GDK_r,       0,       0,       0, },  "वॄ" }, /* va + rr */
+  { {   GDK_v,   GDK_a,   GDK_u,       0,       0,       0, },  "वौ" }, /* va + au */
+  { {   GDK_v,   GDK_u,       0,       0,       0,       0, },  "वु" }, /* va + u */
+  { {   GDK_v,   GDK_u,   GDK_u,       0,       0,       0, },  "वू" }, /* va + uu */
+  { {   GDK_v,   GDK_R,       0,       0,       0,       0, },  "वॄ" }, /* va + R */
+  { {   GDK_v,   GDK_I,       0,       0,       0,       0, },  "वी" }, /* va + I */
+  { {   GDK_v,   GDK_a,   GDK_i,       0,       0,       0, },  "वै" }, /* va + ai */
+  { {   GDK_v,   GDK_a,   GDK_a,       0,       0,       0, },  "वा" }, /* va + aa */
+  { {   GDK_v,   GDK_o,       0,       0,       0,       0, },  "वो" }, /* va + o */
+  { {   GDK_v,   GDK_i,       0,       0,       0,       0, },  "वि" }, /* va + i */
+  { {   GDK_v,   GDK_U,       0,       0,       0,       0, },  "वू" }, /* va + U */
+
+  { {   GDK_d,   GDK_d,       0,       0,       0,       0, },  "ड्" }, /* dda + virama */
+  { {   GDK_d,   GDK_d,   GDK_a,       0,       0,       0, },  "ड" }, /* dda */
+  { {   GDK_d,   GDK_d,   GDK_e,       0,       0,       0, },  "डे" }, /* dda + e */
+  { {   GDK_d,   GDK_d,   GDK_A,       0,       0,       0, },  "डा" }, /* dda + A */
+  { {   GDK_d,   GDK_d,   GDK_r,       0,       0,       0, },  "डृ" }, /* dda + r */
+  { {   GDK_d,   GDK_d,   GDK_i,   GDK_i,       0,       0, },  "डी" }, /* dda + ii */
+  { {   GDK_d,   GDK_d,   GDK_E,       0,       0,       0, },  "डै" }, /* dda + E */
+  { {   GDK_d,   GDK_d,   GDK_r,   GDK_r,       0,       0, },  "डॄ" }, /* dda + rr */
+  { {   GDK_d,   GDK_d,   GDK_a,   GDK_u,       0,       0, },  "डौ" }, /* dda + au */
+  { {   GDK_d,   GDK_d,   GDK_u,       0,       0,       0, },  "डु" }, /* dda + u */
+  { {   GDK_d,   GDK_d,   GDK_u,   GDK_u,       0,       0, },  "डू" }, /* dda + uu */
+  { {   GDK_d,   GDK_d,   GDK_R,       0,       0,       0, },  "डॄ" }, /* dda + R */
+  { {   GDK_d,   GDK_d,   GDK_I,       0,       0,       0, },  "डी" }, /* dda + I */
+  { {   GDK_d,   GDK_d,   GDK_a,   GDK_i,       0,       0, },  "डै" }, /* dda + ai */
+  { {   GDK_d,   GDK_d,   GDK_a,   GDK_a,       0,       0, },  "डा" }, /* dda + aa */
+  { {   GDK_d,   GDK_d,   GDK_o,       0,       0,       0, },  "डो" }, /* dda + o */
+  { {   GDK_d,   GDK_d,   GDK_i,       0,       0,       0, },  "डि" }, /* dda + i */
+  { {   GDK_d,   GDK_d,   GDK_U,       0,       0,       0, },  "डू" }, /* dda + U */
+
+  { {   GDK_S,       0,       0,       0,       0,       0, },  "ष्" }, /* Sa + virama */
+  { {   GDK_S,   GDK_a,       0,       0,       0,       0, },  "ष" }, /* Sa */
+  { {   GDK_S,   GDK_e,       0,       0,       0,       0, },  "षे" }, /* Sa + e */
+  { {   GDK_S,   GDK_A,       0,       0,       0,       0, },  "षा" }, /* Sa + A */
+  { {   GDK_S,   GDK_r,       0,       0,       0,       0, },  "षृ" }, /* Sa + r */
+  { {   GDK_S,   GDK_i,   GDK_i,       0,       0,       0, },  "षी" }, /* Sa + ii */
+  { {   GDK_S,   GDK_E,       0,       0,       0,       0, },  "षै" }, /* Sa + E */
+  { {   GDK_S,   GDK_r,   GDK_r,       0,       0,       0, },  "षॄ" }, /* Sa + rr */
+  { {   GDK_S,   GDK_a,   GDK_u,       0,       0,       0, },  "षौ" }, /* Sa + au */
+  { {   GDK_S,   GDK_u,       0,       0,       0,       0, },  "षु" }, /* Sa + u */
+  { {   GDK_S,   GDK_u,   GDK_u,       0,       0,       0, },  "षू" }, /* Sa + uu */
+  { {   GDK_S,   GDK_R,       0,       0,       0,       0, },  "षॄ" }, /* Sa + R */
+  { {   GDK_S,   GDK_I,       0,       0,       0,       0, },  "षी" }, /* Sa + I */
+  { {   GDK_S,   GDK_a,   GDK_i,       0,       0,       0, },  "षै" }, /* Sa + ai */
+  { {   GDK_S,   GDK_a,   GDK_a,       0,       0,       0, },  "षा" }, /* Sa + aa */
+  { {   GDK_S,   GDK_o,       0,       0,       0,       0, },  "षो" }, /* Sa + o */
+  { {   GDK_S,   GDK_i,       0,       0,       0,       0, },  "षि" }, /* Sa + i */
+  { {   GDK_S,   GDK_U,       0,       0,       0,       0, },  "षू" }, /* Sa + U */
+
+  { {   GDK_p,   GDK_h,       0,       0,       0,       0, },  "फ्" }, /* pha + virama */
+  { {   GDK_p,   GDK_h,   GDK_a,       0,       0,       0, },  "फ" }, /* pha */
+  { {   GDK_p,   GDK_h,   GDK_e,       0,       0,       0, },  "फे" }, /* pha + e */
+  { {   GDK_p,   GDK_h,   GDK_A,       0,       0,       0, },  "फा" }, /* pha + A */
+  { {   GDK_p,   GDK_h,   GDK_r,       0,       0,       0, },  "फृ" }, /* pha + r */
+  { {   GDK_p,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "फी" }, /* pha + ii */
+  { {   GDK_p,   GDK_h,   GDK_E,       0,       0,       0, },  "फै" }, /* pha + E */
+  { {   GDK_p,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "फॄ" }, /* pha + rr */
+  { {   GDK_p,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "फौ" }, /* pha + au */
+  { {   GDK_p,   GDK_h,   GDK_u,       0,       0,       0, },  "फु" }, /* pha + u */
+  { {   GDK_p,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "फू" }, /* pha + uu */
+  { {   GDK_p,   GDK_h,   GDK_R,       0,       0,       0, },  "फॄ" }, /* pha + R */
+  { {   GDK_p,   GDK_h,   GDK_I,       0,       0,       0, },  "फी" }, /* pha + I */
+  { {   GDK_p,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "फै" }, /* pha + ai */
+  { {   GDK_p,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "फा" }, /* pha + aa */
+  { {   GDK_p,   GDK_h,   GDK_o,       0,       0,       0, },  "फो" }, /* pha + o */
+  { {   GDK_p,   GDK_h,   GDK_i,       0,       0,       0, },  "फि" }, /* pha + i */
+  { {   GDK_p,   GDK_h,   GDK_U,       0,       0,       0, },  "फू" }, /* pha + U */
+
+  { {   GDK_l,   GDK_l,       0,       0,       0,       0, },  "ळ्" }, /* lla + virama */
+  { {   GDK_l,   GDK_l,   GDK_a,       0,       0,       0, },  "ळ" }, /* lla */
+  { {   GDK_l,   GDK_l,   GDK_e,       0,       0,       0, },  "ळे" }, /* lla + e */
+  { {   GDK_l,   GDK_l,   GDK_A,       0,       0,       0, },  "ळा" }, /* lla + A */
+  { {   GDK_l,   GDK_l,   GDK_r,       0,       0,       0, },  "ळृ" }, /* lla + r */
+  { {   GDK_l,   GDK_l,   GDK_i,   GDK_i,       0,       0, },  "ळी" }, /* lla + ii */
+  { {   GDK_l,   GDK_l,   GDK_E,       0,       0,       0, },  "ळै" }, /* lla + E */
+  { {   GDK_l,   GDK_l,   GDK_r,   GDK_r,       0,       0, },  "ळॄ" }, /* lla + rr */
+  { {   GDK_l,   GDK_l,   GDK_a,   GDK_u,       0,       0, },  "ळौ" }, /* lla + au */
+  { {   GDK_l,   GDK_l,   GDK_u,       0,       0,       0, },  "ळु" }, /* lla + u */
+  { {   GDK_l,   GDK_l,   GDK_u,   GDK_u,       0,       0, },  "ळू" }, /* lla + uu */
+  { {   GDK_l,   GDK_l,   GDK_R,       0,       0,       0, },  "ळॄ" }, /* lla + R */
+  { {   GDK_l,   GDK_l,   GDK_I,       0,       0,       0, },  "ळी" }, /* lla + I */
+  { {   GDK_l,   GDK_l,   GDK_a,   GDK_i,       0,       0, },  "ळै" }, /* lla + ai */
+  { {   GDK_l,   GDK_l,   GDK_a,   GDK_a,       0,       0, },  "ळा" }, /* lla + aa */
+  { {   GDK_l,   GDK_l,   GDK_o,       0,       0,       0, },  "ळो" }, /* lla + o */
+  { {   GDK_l,   GDK_l,   GDK_i,       0,       0,       0, },  "ळि" }, /* lla + i */
+  { {   GDK_l,   GDK_l,   GDK_U,       0,       0,       0, },  "ळू" }, /* lla + U */
+
+  { {   GDK_M,       0,       0,       0,       0,       0, },  "ङ्" }, /* Ma + virama */
+  { {   GDK_M,   GDK_a,       0,       0,       0,       0, },  "ङ" }, /* Ma */
+  { {   GDK_M,   GDK_e,       0,       0,       0,       0, },  "ङे" }, /* Ma + e */
+  { {   GDK_M,   GDK_A,       0,       0,       0,       0, },  "ङा" }, /* Ma + A */
+  { {   GDK_M,   GDK_r,       0,       0,       0,       0, },  "ङृ" }, /* Ma + r */
+  { {   GDK_M,   GDK_i,   GDK_i,       0,       0,       0, },  "ङी" }, /* Ma + ii */
+  { {   GDK_M,   GDK_E,       0,       0,       0,       0, },  "ङै" }, /* Ma + E */
+  { {   GDK_M,   GDK_r,   GDK_r,       0,       0,       0, },  "ङॄ" }, /* Ma + rr */
+  { {   GDK_M,   GDK_a,   GDK_u,       0,       0,       0, },  "ङौ" }, /* Ma + au */
+  { {   GDK_M,   GDK_u,       0,       0,       0,       0, },  "ङु" }, /* Ma + u */
+  { {   GDK_M,   GDK_u,   GDK_u,       0,       0,       0, },  "ङू" }, /* Ma + uu */
+  { {   GDK_M,   GDK_R,       0,       0,       0,       0, },  "ङॄ" }, /* Ma + R */
+  { {   GDK_M,   GDK_I,       0,       0,       0,       0, },  "ङी" }, /* Ma + I */
+  { {   GDK_M,   GDK_a,   GDK_i,       0,       0,       0, },  "ङै" }, /* Ma + ai */
+  { {   GDK_M,   GDK_a,   GDK_a,       0,       0,       0, },  "ङा" }, /* Ma + aa */
+  { {   GDK_M,   GDK_o,       0,       0,       0,       0, },  "ङो" }, /* Ma + o */
+  { {   GDK_M,   GDK_i,       0,       0,       0,       0, },  "ङि" }, /* Ma + i */
+  { {   GDK_M,   GDK_U,       0,       0,       0,       0, },  "ङू" }, /* Ma + U */
+
+  { {   GDK_p,       0,       0,       0,       0,       0, },  "प्" }, /* pa + virama */
+  { {   GDK_p,   GDK_a,       0,       0,       0,       0, },  "प" }, /* pa */
+  { {   GDK_p,   GDK_e,       0,       0,       0,       0, },  "पे" }, /* pa + e */
+  { {   GDK_p,   GDK_A,       0,       0,       0,       0, },  "पा" }, /* pa + A */
+  { {   GDK_p,   GDK_r,       0,       0,       0,       0, },  "पृ" }, /* pa + r */
+  { {   GDK_p,   GDK_i,   GDK_i,       0,       0,       0, },  "पी" }, /* pa + ii */
+  { {   GDK_p,   GDK_E,       0,       0,       0,       0, },  "पै" }, /* pa + E */
+  { {   GDK_p,   GDK_r,   GDK_r,       0,       0,       0, },  "पॄ" }, /* pa + rr */
+  { {   GDK_p,   GDK_a,   GDK_u,       0,       0,       0, },  "पौ" }, /* pa + au */
+  { {   GDK_p,   GDK_u,       0,       0,       0,       0, },  "पु" }, /* pa + u */
+  { {   GDK_p,   GDK_u,   GDK_u,       0,       0,       0, },  "पू" }, /* pa + uu */
+  { {   GDK_p,   GDK_R,       0,       0,       0,       0, },  "पॄ" }, /* pa + R */
+  { {   GDK_p,   GDK_I,       0,       0,       0,       0, },  "पी" }, /* pa + I */
+  { {   GDK_p,   GDK_a,   GDK_i,       0,       0,       0, },  "पै" }, /* pa + ai */
+  { {   GDK_p,   GDK_a,   GDK_a,       0,       0,       0, },  "पा" }, /* pa + aa */
+  { {   GDK_p,   GDK_o,       0,       0,       0,       0, },  "पो" }, /* pa + o */
+  { {   GDK_p,   GDK_i,       0,       0,       0,       0, },  "पि" }, /* pa + i */
+  { {   GDK_p,   GDK_U,       0,       0,       0,       0, },  "पू" }, /* pa + U */
+
+  { {   GDK_g,       0,       0,       0,       0,       0, },  "ग्" }, /* ga + virama */
+  { {   GDK_g,   GDK_a,       0,       0,       0,       0, },  "ग" }, /* ga */
+  { {   GDK_g,   GDK_e,       0,       0,       0,       0, },  "गे" }, /* ga + e */
+  { {   GDK_g,   GDK_A,       0,       0,       0,       0, },  "गा" }, /* ga + A */
+  { {   GDK_g,   GDK_r,       0,       0,       0,       0, },  "गृ" }, /* ga + r */
+  { {   GDK_g,   GDK_i,   GDK_i,       0,       0,       0, },  "गी" }, /* ga + ii */
+  { {   GDK_g,   GDK_E,       0,       0,       0,       0, },  "गै" }, /* ga + E */
+  { {   GDK_g,   GDK_r,   GDK_r,       0,       0,       0, },  "गॄ" }, /* ga + rr */
+  { {   GDK_g,   GDK_a,   GDK_u,       0,       0,       0, },  "गौ" }, /* ga + au */
+  { {   GDK_g,   GDK_u,       0,       0,       0,       0, },  "गु" }, /* ga + u */
+  { {   GDK_g,   GDK_u,   GDK_u,       0,       0,       0, },  "गू" }, /* ga + uu */
+  { {   GDK_g,   GDK_R,       0,       0,       0,       0, },  "गॄ" }, /* ga + R */
+  { {   GDK_g,   GDK_I,       0,       0,       0,       0, },  "गी" }, /* ga + I */
+  { {   GDK_g,   GDK_a,   GDK_i,       0,       0,       0, },  "गै" }, /* ga + ai */
+  { {   GDK_g,   GDK_a,   GDK_a,       0,       0,       0, },  "गा" }, /* ga + aa */
+  { {   GDK_g,   GDK_o,       0,       0,       0,       0, },  "गो" }, /* ga + o */
+  { {   GDK_g,   GDK_i,       0,       0,       0,       0, },  "गि" }, /* ga + i */
+  { {   GDK_g,   GDK_U,       0,       0,       0,       0, },  "गू" }, /* ga + U */
+
+  { {   GDK_l,       0,       0,       0,       0,       0, },  "ल्" }, /* la + virama */
+  { {   GDK_l,   GDK_a,       0,       0,       0,       0, },  "ल" }, /* la */
+  { {   GDK_l,   GDK_e,       0,       0,       0,       0, },  "ले" }, /* la + e */
+  { {   GDK_l,   GDK_A,       0,       0,       0,       0, },  "ला" }, /* la + A */
+  { {   GDK_l,   GDK_r,       0,       0,       0,       0, },  "लृ" }, /* la + r */
+  { {   GDK_l,   GDK_i,   GDK_i,       0,       0,       0, },  "ली" }, /* la + ii */
+  { {   GDK_l,   GDK_E,       0,       0,       0,       0, },  "लै" }, /* la + E */
+  { {   GDK_l,   GDK_r,   GDK_r,       0,       0,       0, },  "लॄ" }, /* la + rr */
+  { {   GDK_l,   GDK_a,   GDK_u,       0,       0,       0, },  "लौ" }, /* la + au */
+  { {   GDK_l,   GDK_u,       0,       0,       0,       0, },  "लु" }, /* la + u */
+  { {   GDK_l,   GDK_u,   GDK_u,       0,       0,       0, },  "लू" }, /* la + uu */
+  { {   GDK_l,   GDK_R,       0,       0,       0,       0, },  "लॄ" }, /* la + R */
+  { {   GDK_l,   GDK_I,       0,       0,       0,       0, },  "ली" }, /* la + I */
+  { {   GDK_l,   GDK_a,   GDK_i,       0,       0,       0, },  "लै" }, /* la + ai */
+  { {   GDK_l,   GDK_a,   GDK_a,       0,       0,       0, },  "ला" }, /* la + aa */
+  { {   GDK_l,   GDK_o,       0,       0,       0,       0, },  "लो" }, /* la + o */
+  { {   GDK_l,   GDK_i,       0,       0,       0,       0, },  "लि" }, /* la + i */
+  { {   GDK_l,   GDK_U,       0,       0,       0,       0, },  "लू" }, /* la + U */
+
+  { {   GDK_n,   GDK_n,   GDK_n,       0,       0,       0, },  "ऩ्" }, /* nnna + virama */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_a,       0,       0, },  "ऩ" }, /* nnna */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_e,       0,       0, },  "ऩे" }, /* nnna + e */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_A,       0,       0, },  "ऩा" }, /* nnna + A */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_r,       0,       0, },  "ऩृ" }, /* nnna + r */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_i,   GDK_i,       0, },  "ऩी" }, /* nnna + ii */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_E,       0,       0, },  "ऩै" }, /* nnna + E */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_r,   GDK_r,       0, },  "ऩॄ" }, /* nnna + rr */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_a,   GDK_u,       0, },  "ऩौ" }, /* nnna + au */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_u,       0,       0, },  "ऩु" }, /* nnna + u */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_u,   GDK_u,       0, },  "ऩू" }, /* nnna + uu */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_R,       0,       0, },  "ऩॄ" }, /* nnna + R */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_I,       0,       0, },  "ऩी" }, /* nnna + I */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_a,   GDK_i,       0, },  "ऩै" }, /* nnna + ai */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_a,   GDK_a,       0, },  "ऩा" }, /* nnna + aa */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_o,       0,       0, },  "ऩो" }, /* nnna + o */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_i,       0,       0, },  "ऩि" }, /* nnna + i */
+  { {   GDK_n,   GDK_n,   GDK_n,   GDK_U,       0,       0, },  "ऩू" }, /* nnna + U */
+
+  { {   GDK_j,       0,       0,       0,       0,       0, },  "ज्" }, /* ja + virama */
+  { {   GDK_j,   GDK_a,       0,       0,       0,       0, },  "ज" }, /* ja */
+  { {   GDK_j,   GDK_e,       0,       0,       0,       0, },  "जे" }, /* ja + e */
+  { {   GDK_j,   GDK_A,       0,       0,       0,       0, },  "जा" }, /* ja + A */
+  { {   GDK_j,   GDK_r,       0,       0,       0,       0, },  "जृ" }, /* ja + r */
+  { {   GDK_j,   GDK_i,   GDK_i,       0,       0,       0, },  "जी" }, /* ja + ii */
+  { {   GDK_j,   GDK_E,       0,       0,       0,       0, },  "जै" }, /* ja + E */
+  { {   GDK_j,   GDK_r,   GDK_r,       0,       0,       0, },  "जॄ" }, /* ja + rr */
+  { {   GDK_j,   GDK_a,   GDK_u,       0,       0,       0, },  "जौ" }, /* ja + au */
+  { {   GDK_j,   GDK_u,       0,       0,       0,       0, },  "जु" }, /* ja + u */
+  { {   GDK_j,   GDK_u,   GDK_u,       0,       0,       0, },  "जू" }, /* ja + uu */
+  { {   GDK_j,   GDK_R,       0,       0,       0,       0, },  "जॄ" }, /* ja + R */
+  { {   GDK_j,   GDK_I,       0,       0,       0,       0, },  "जी" }, /* ja + I */
+  { {   GDK_j,   GDK_a,   GDK_i,       0,       0,       0, },  "जै" }, /* ja + ai */
+  { {   GDK_j,   GDK_a,   GDK_a,       0,       0,       0, },  "जा" }, /* ja + aa */
+  { {   GDK_j,   GDK_o,       0,       0,       0,       0, },  "जो" }, /* ja + o */
+  { {   GDK_j,   GDK_i,       0,       0,       0,       0, },  "जि" }, /* ja + i */
+  { {   GDK_j,   GDK_U,       0,       0,       0,       0, },  "जू" }, /* ja + U */
+
+  { {   GDK_D,       0,       0,       0,       0,       0, },  "ध्" }, /* Da + virama */
+  { {   GDK_D,   GDK_a,       0,       0,       0,       0, },  "ध" }, /* Da */
+  { {   GDK_D,   GDK_e,       0,       0,       0,       0, },  "धे" }, /* Da + e */
+  { {   GDK_D,   GDK_A,       0,       0,       0,       0, },  "धा" }, /* Da + A */
+  { {   GDK_D,   GDK_r,       0,       0,       0,       0, },  "धृ" }, /* Da + r */
+  { {   GDK_D,   GDK_i,   GDK_i,       0,       0,       0, },  "धी" }, /* Da + ii */
+  { {   GDK_D,   GDK_E,       0,       0,       0,       0, },  "धै" }, /* Da + E */
+  { {   GDK_D,   GDK_r,   GDK_r,       0,       0,       0, },  "धॄ" }, /* Da + rr */
+  { {   GDK_D,   GDK_a,   GDK_u,       0,       0,       0, },  "धौ" }, /* Da + au */
+  { {   GDK_D,   GDK_u,       0,       0,       0,       0, },  "धु" }, /* Da + u */
+  { {   GDK_D,   GDK_u,   GDK_u,       0,       0,       0, },  "धू" }, /* Da + uu */
+  { {   GDK_D,   GDK_R,       0,       0,       0,       0, },  "धॄ" }, /* Da + R */
+  { {   GDK_D,   GDK_I,       0,       0,       0,       0, },  "धी" }, /* Da + I */
+  { {   GDK_D,   GDK_a,   GDK_i,       0,       0,       0, },  "धै" }, /* Da + ai */
+  { {   GDK_D,   GDK_a,   GDK_a,       0,       0,       0, },  "धा" }, /* Da + aa */
+  { {   GDK_D,   GDK_o,       0,       0,       0,       0, },  "धो" }, /* Da + o */
+  { {   GDK_D,   GDK_i,       0,       0,       0,       0, },  "धि" }, /* Da + i */
+  { {   GDK_D,   GDK_U,       0,       0,       0,       0, },  "धू" }, /* Da + U */
+
+  { {   GDK_k,       0,       0,       0,       0,       0, },  "क्" }, /* ka + virama */
+  { {   GDK_k,   GDK_a,       0,       0,       0,       0, },  "क" }, /* ka */
+  { {   GDK_k,   GDK_e,       0,       0,       0,       0, },  "के" }, /* ka + e */
+  { {   GDK_k,   GDK_A,       0,       0,       0,       0, },  "का" }, /* ka + A */
+  { {   GDK_k,   GDK_r,       0,       0,       0,       0, },  "कृ" }, /* ka + r */
+  { {   GDK_k,   GDK_i,   GDK_i,       0,       0,       0, },  "की" }, /* ka + ii */
+  { {   GDK_k,   GDK_E,       0,       0,       0,       0, },  "कै" }, /* ka + E */
+  { {   GDK_k,   GDK_r,   GDK_r,       0,       0,       0, },  "कॄ" }, /* ka + rr */
+  { {   GDK_k,   GDK_a,   GDK_u,       0,       0,       0, },  "कौ" }, /* ka + au */
+  { {   GDK_k,   GDK_u,       0,       0,       0,       0, },  "कु" }, /* ka + u */
+  { {   GDK_k,   GDK_u,   GDK_u,       0,       0,       0, },  "कू" }, /* ka + uu */
+  { {   GDK_k,   GDK_R,       0,       0,       0,       0, },  "कॄ" }, /* ka + R */
+  { {   GDK_k,   GDK_I,       0,       0,       0,       0, },  "की" }, /* ka + I */
+  { {   GDK_k,   GDK_a,   GDK_i,       0,       0,       0, },  "कै" }, /* ka + ai */
+  { {   GDK_k,   GDK_a,   GDK_a,       0,       0,       0, },  "का" }, /* ka + aa */
+  { {   GDK_k,   GDK_o,       0,       0,       0,       0, },  "को" }, /* ka + o */
+  { {   GDK_k,   GDK_i,       0,       0,       0,       0, },  "कि" }, /* ka + i */
+  { {   GDK_k,   GDK_U,       0,       0,       0,       0, },  "कू" }, /* ka + U */
+
+  { {   GDK_w,       0,       0,       0,       0,       0, },  "व्" }, /* wa + virama */
+  { {   GDK_w,   GDK_a,       0,       0,       0,       0, },  "व" }, /* wa */
+  { {   GDK_w,   GDK_e,       0,       0,       0,       0, },  "वे" }, /* wa + e */
+  { {   GDK_w,   GDK_A,       0,       0,       0,       0, },  "वा" }, /* wa + A */
+  { {   GDK_w,   GDK_r,       0,       0,       0,       0, },  "वृ" }, /* wa + r */
+  { {   GDK_w,   GDK_i,   GDK_i,       0,       0,       0, },  "वी" }, /* wa + ii */
+  { {   GDK_w,   GDK_E,       0,       0,       0,       0, },  "वै" }, /* wa + E */
+  { {   GDK_w,   GDK_r,   GDK_r,       0,       0,       0, },  "वॄ" }, /* wa + rr */
+  { {   GDK_w,   GDK_a,   GDK_u,       0,       0,       0, },  "वौ" }, /* wa + au */
+  { {   GDK_w,   GDK_u,       0,       0,       0,       0, },  "वु" }, /* wa + u */
+  { {   GDK_w,   GDK_u,   GDK_u,       0,       0,       0, },  "वू" }, /* wa + uu */
+  { {   GDK_w,   GDK_R,       0,       0,       0,       0, },  "वॄ" }, /* wa + R */
+  { {   GDK_w,   GDK_I,       0,       0,       0,       0, },  "वी" }, /* wa + I */
+  { {   GDK_w,   GDK_a,   GDK_i,       0,       0,       0, },  "वै" }, /* wa + ai */
+  { {   GDK_w,   GDK_a,   GDK_a,       0,       0,       0, },  "वा" }, /* wa + aa */
+  { {   GDK_w,   GDK_o,       0,       0,       0,       0, },  "वो" }, /* wa + o */
+  { {   GDK_w,   GDK_i,       0,       0,       0,       0, },  "वि" }, /* wa + i */
+  { {   GDK_w,   GDK_U,       0,       0,       0,       0, },  "वू" }, /* wa + U */
+
+  { {   GDK_K,       0,       0,       0,       0,       0, },  "ख्" }, /* Ka + virama */
+  { {   GDK_K,   GDK_a,       0,       0,       0,       0, },  "ख" }, /* Ka */
+  { {   GDK_K,   GDK_e,       0,       0,       0,       0, },  "खे" }, /* Ka + e */
+  { {   GDK_K,   GDK_A,       0,       0,       0,       0, },  "खा" }, /* Ka + A */
+  { {   GDK_K,   GDK_r,       0,       0,       0,       0, },  "खृ" }, /* Ka + r */
+  { {   GDK_K,   GDK_i,   GDK_i,       0,       0,       0, },  "खी" }, /* Ka + ii */
+  { {   GDK_K,   GDK_E,       0,       0,       0,       0, },  "खै" }, /* Ka + E */
+  { {   GDK_K,   GDK_r,   GDK_r,       0,       0,       0, },  "खॄ" }, /* Ka + rr */
+  { {   GDK_K,   GDK_a,   GDK_u,       0,       0,       0, },  "खौ" }, /* Ka + au */
+  { {   GDK_K,   GDK_u,       0,       0,       0,       0, },  "खु" }, /* Ka + u */
+  { {   GDK_K,   GDK_u,   GDK_u,       0,       0,       0, },  "खू" }, /* Ka + uu */
+  { {   GDK_K,   GDK_R,       0,       0,       0,       0, },  "खॄ" }, /* Ka + R */
+  { {   GDK_K,   GDK_I,       0,       0,       0,       0, },  "खी" }, /* Ka + I */
+  { {   GDK_K,   GDK_a,   GDK_i,       0,       0,       0, },  "खै" }, /* Ka + ai */
+  { {   GDK_K,   GDK_a,   GDK_a,       0,       0,       0, },  "खा" }, /* Ka + aa */
+  { {   GDK_K,   GDK_o,       0,       0,       0,       0, },  "खो" }, /* Ka + o */
+  { {   GDK_K,   GDK_i,       0,       0,       0,       0, },  "खि" }, /* Ka + i */
+  { {   GDK_K,   GDK_U,       0,       0,       0,       0, },  "खू" }, /* Ka + U */
+
+  { {   GDK_V,       0,       0,       0,       0,       0, },  "ढ्" }, /* Va + virama */
+  { {   GDK_V,   GDK_a,       0,       0,       0,       0, },  "ढ" }, /* Va */
+  { {   GDK_V,   GDK_e,       0,       0,       0,       0, },  "ढे" }, /* Va + e */
+  { {   GDK_V,   GDK_A,       0,       0,       0,       0, },  "ढा" }, /* Va + A */
+  { {   GDK_V,   GDK_r,       0,       0,       0,       0, },  "ढृ" }, /* Va + r */
+  { {   GDK_V,   GDK_i,   GDK_i,       0,       0,       0, },  "ढी" }, /* Va + ii */
+  { {   GDK_V,   GDK_E,       0,       0,       0,       0, },  "ढै" }, /* Va + E */
+  { {   GDK_V,   GDK_r,   GDK_r,       0,       0,       0, },  "ढॄ" }, /* Va + rr */
+  { {   GDK_V,   GDK_a,   GDK_u,       0,       0,       0, },  "ढौ" }, /* Va + au */
+  { {   GDK_V,   GDK_u,       0,       0,       0,       0, },  "ढु" }, /* Va + u */
+  { {   GDK_V,   GDK_u,   GDK_u,       0,       0,       0, },  "ढू" }, /* Va + uu */
+  { {   GDK_V,   GDK_R,       0,       0,       0,       0, },  "ढॄ" }, /* Va + R */
+  { {   GDK_V,   GDK_I,       0,       0,       0,       0, },  "ढी" }, /* Va + I */
+  { {   GDK_V,   GDK_a,   GDK_i,       0,       0,       0, },  "ढै" }, /* Va + ai */
+  { {   GDK_V,   GDK_a,   GDK_a,       0,       0,       0, },  "ढा" }, /* Va + aa */
+  { {   GDK_V,   GDK_o,       0,       0,       0,       0, },  "ढो" }, /* Va + o */
+  { {   GDK_V,   GDK_i,       0,       0,       0,       0, },  "ढि" }, /* Va + i */
+  { {   GDK_V,   GDK_U,       0,       0,       0,       0, },  "ढू" }, /* Va + U */
+
+  { {   GDK_t,   GDK_h,       0,       0,       0,       0, },  "थ्" }, /* tha + virama */
+  { {   GDK_t,   GDK_h,   GDK_a,       0,       0,       0, },  "थ" }, /* tha */
+  { {   GDK_t,   GDK_h,   GDK_e,       0,       0,       0, },  "थे" }, /* tha + e */
+  { {   GDK_t,   GDK_h,   GDK_A,       0,       0,       0, },  "था" }, /* tha + A */
+  { {   GDK_t,   GDK_h,   GDK_r,       0,       0,       0, },  "थृ" }, /* tha + r */
+  { {   GDK_t,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "थी" }, /* tha + ii */
+  { {   GDK_t,   GDK_h,   GDK_E,       0,       0,       0, },  "थै" }, /* tha + E */
+  { {   GDK_t,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "थॄ" }, /* tha + rr */
+  { {   GDK_t,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "थौ" }, /* tha + au */
+  { {   GDK_t,   GDK_h,   GDK_u,       0,       0,       0, },  "थु" }, /* tha + u */
+  { {   GDK_t,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "थू" }, /* tha + uu */
+  { {   GDK_t,   GDK_h,   GDK_R,       0,       0,       0, },  "थॄ" }, /* tha + R */
+  { {   GDK_t,   GDK_h,   GDK_I,       0,       0,       0, },  "थी" }, /* tha + I */
+  { {   GDK_t,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "थै" }, /* tha + ai */
+  { {   GDK_t,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "था" }, /* tha + aa */
+  { {   GDK_t,   GDK_h,   GDK_o,       0,       0,       0, },  "थो" }, /* tha + o */
+  { {   GDK_t,   GDK_h,   GDK_i,       0,       0,       0, },  "थि" }, /* tha + i */
+  { {   GDK_t,   GDK_h,   GDK_U,       0,       0,       0, },  "थू" }, /* tha + U */
+
+  { {   GDK_d,   GDK_d,   GDK_h,       0,       0,       0, },  "ढ्" }, /* ddha + virama */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_a,       0,       0, },  "ढ" }, /* ddha */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_e,       0,       0, },  "ढे" }, /* ddha + e */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_A,       0,       0, },  "ढा" }, /* ddha + A */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_r,       0,       0, },  "ढृ" }, /* ddha + r */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_i,   GDK_i,       0, },  "ढी" }, /* ddha + ii */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_E,       0,       0, },  "ढै" }, /* ddha + E */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_r,   GDK_r,       0, },  "ढॄ" }, /* ddha + rr */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_a,   GDK_u,       0, },  "ढौ" }, /* ddha + au */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_u,       0,       0, },  "ढु" }, /* ddha + u */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_u,   GDK_u,       0, },  "ढू" }, /* ddha + uu */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_R,       0,       0, },  "ढॄ" }, /* ddha + R */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_I,       0,       0, },  "ढी" }, /* ddha + I */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_a,   GDK_i,       0, },  "ढै" }, /* ddha + ai */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_a,   GDK_a,       0, },  "ढा" }, /* ddha + aa */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_o,       0,       0, },  "ढो" }, /* ddha + o */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_i,       0,       0, },  "ढि" }, /* ddha + i */
+  { {   GDK_d,   GDK_d,   GDK_h,   GDK_U,       0,       0, },  "ढू" }, /* ddha + U */
+
+  { {   GDK_d,   GDK_h,       0,       0,       0,       0, },  "ध्" }, /* dha + virama */
+  { {   GDK_d,   GDK_h,   GDK_a,       0,       0,       0, },  "ध" }, /* dha */
+  { {   GDK_d,   GDK_h,   GDK_e,       0,       0,       0, },  "धे" }, /* dha + e */
+  { {   GDK_d,   GDK_h,   GDK_A,       0,       0,       0, },  "धा" }, /* dha + A */
+  { {   GDK_d,   GDK_h,   GDK_r,       0,       0,       0, },  "धृ" }, /* dha + r */
+  { {   GDK_d,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "धी" }, /* dha + ii */
+  { {   GDK_d,   GDK_h,   GDK_E,       0,       0,       0, },  "धै" }, /* dha + E */
+  { {   GDK_d,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "धॄ" }, /* dha + rr */
+  { {   GDK_d,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "धौ" }, /* dha + au */
+  { {   GDK_d,   GDK_h,   GDK_u,       0,       0,       0, },  "धु" }, /* dha + u */
+  { {   GDK_d,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "धू" }, /* dha + uu */
+  { {   GDK_d,   GDK_h,   GDK_R,       0,       0,       0, },  "धॄ" }, /* dha + R */
+  { {   GDK_d,   GDK_h,   GDK_I,       0,       0,       0, },  "धी" }, /* dha + I */
+  { {   GDK_d,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "धै" }, /* dha + ai */
+  { {   GDK_d,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "धा" }, /* dha + aa */
+  { {   GDK_d,   GDK_h,   GDK_o,       0,       0,       0, },  "धो" }, /* dha + o */
+  { {   GDK_d,   GDK_h,   GDK_i,       0,       0,       0, },  "धि" }, /* dha + i */
+  { {   GDK_d,   GDK_h,   GDK_U,       0,       0,       0, },  "धू" }, /* dha + U */
+
+  { {   GDK_k,   GDK_h,       0,       0,       0,       0, },  "ख्" }, /* kha + virama */
+  { {   GDK_k,   GDK_h,   GDK_a,       0,       0,       0, },  "ख" }, /* kha */
+  { {   GDK_k,   GDK_h,   GDK_e,       0,       0,       0, },  "खे" }, /* kha + e */
+  { {   GDK_k,   GDK_h,   GDK_A,       0,       0,       0, },  "खा" }, /* kha + A */
+  { {   GDK_k,   GDK_h,   GDK_r,       0,       0,       0, },  "खृ" }, /* kha + r */
+  { {   GDK_k,   GDK_h,   GDK_i,   GDK_i,       0,       0, },  "खी" }, /* kha + ii */
+  { {   GDK_k,   GDK_h,   GDK_E,       0,       0,       0, },  "खै" }, /* kha + E */
+  { {   GDK_k,   GDK_h,   GDK_r,   GDK_r,       0,       0, },  "खॄ" }, /* kha + rr */
+  { {   GDK_k,   GDK_h,   GDK_a,   GDK_u,       0,       0, },  "खौ" }, /* kha + au */
+  { {   GDK_k,   GDK_h,   GDK_u,       0,       0,       0, },  "खु" }, /* kha + u */
+  { {   GDK_k,   GDK_h,   GDK_u,   GDK_u,       0,       0, },  "खू" }, /* kha + uu */
+  { {   GDK_k,   GDK_h,   GDK_R,       0,       0,       0, },  "खॄ" }, /* kha + R */
+  { {   GDK_k,   GDK_h,   GDK_I,       0,       0,       0, },  "खी" }, /* kha + I */
+  { {   GDK_k,   GDK_h,   GDK_a,   GDK_i,       0,       0, },  "खै" }, /* kha + ai */
+  { {   GDK_k,   GDK_h,   GDK_a,   GDK_a,       0,       0, },  "खा" }, /* kha + aa */
+  { {   GDK_k,   GDK_h,   GDK_o,       0,       0,       0, },  "खो" }, /* kha + o */
+  { {   GDK_k,   GDK_h,   GDK_i,       0,       0,       0, },  "खि" }, /* kha + i */
+  { {   GDK_k,   GDK_h,   GDK_U,       0,       0,       0, },  "खू" }, /* kha + U */
+
+  { {   GDK_z,       0,       0,       0,       0,       0, },  "श्" }, /* za + virama */
+  { {   GDK_z,   GDK_a,       0,       0,       0,       0, },  "श" }, /* za */
+  { {   GDK_z,   GDK_e,       0,       0,       0,       0, },  "शे" }, /* za + e */
+  { {   GDK_z,   GDK_A,       0,       0,       0,       0, },  "शा" }, /* za + A */
+  { {   GDK_z,   GDK_r,       0,       0,       0,       0, },  "शृ" }, /* za + r */
+  { {   GDK_z,   GDK_i,   GDK_i,       0,       0,       0, },  "शी" }, /* za + ii */
+  { {   GDK_z,   GDK_E,       0,       0,       0,       0, },  "शै" }, /* za + E */
+  { {   GDK_z,   GDK_r,   GDK_r,       0,       0,       0, },  "शॄ" }, /* za + rr */
+  { {   GDK_z,   GDK_a,   GDK_u,       0,       0,       0, },  "शौ" }, /* za + au */
+  { {   GDK_z,   GDK_u,       0,       0,       0,       0, },  "शु" }, /* za + u */
+  { {   GDK_z,   GDK_u,   GDK_u,       0,       0,       0, },  "शू" }, /* za + uu */
+  { {   GDK_z,   GDK_R,       0,       0,       0,       0, },  "शॄ" }, /* za + R */
+  { {   GDK_z,   GDK_I,       0,       0,       0,       0, },  "शी" }, /* za + I */
+  { {   GDK_z,   GDK_a,   GDK_i,       0,       0,       0, },  "शै" }, /* za + ai */
+  { {   GDK_z,   GDK_a,   GDK_a,       0,       0,       0, },  "शा" }, /* za + aa */
+  { {   GDK_z,   GDK_o,       0,       0,       0,       0, },  "शो" }, /* za + o */
+  { {   GDK_z,   GDK_i,       0,       0,       0,       0, },  "शि" }, /* za + i */
+  { {   GDK_z,   GDK_U,       0,       0,       0,       0, },  "शू" }, /* za + U */
+
+  { {   GDK_G,       0,       0,       0,       0,       0, },  "घ्" }, /* Ga + virama */
+  { {   GDK_G,   GDK_a,       0,       0,       0,       0, },  "घ" }, /* Ga */
+  { {   GDK_G,   GDK_e,       0,       0,       0,       0, },  "घे" }, /* Ga + e */
+  { {   GDK_G,   GDK_A,       0,       0,       0,       0, },  "घा" }, /* Ga + A */
+  { {   GDK_G,   GDK_r,       0,       0,       0,       0, },  "घृ" }, /* Ga + r */
+  { {   GDK_G,   GDK_i,   GDK_i,       0,       0,       0, },  "घी" }, /* Ga + ii */
+  { {   GDK_G,   GDK_E,       0,       0,       0,       0, },  "घै" }, /* Ga + E */
+  { {   GDK_G,   GDK_r,   GDK_r,       0,       0,       0, },  "घॄ" }, /* Ga + rr */
+  { {   GDK_G,   GDK_a,   GDK_u,       0,       0,       0, },  "घौ" }, /* Ga + au */
+  { {   GDK_G,   GDK_u,       0,       0,       0,       0, },  "घु" }, /* Ga + u */
+  { {   GDK_G,   GDK_u,   GDK_u,       0,       0,       0, },  "घू" }, /* Ga + uu */
+  { {   GDK_G,   GDK_R,       0,       0,       0,       0, },  "घॄ" }, /* Ga + R */
+  { {   GDK_G,   GDK_I,       0,       0,       0,       0, },  "घी" }, /* Ga + I */
+  { {   GDK_G,   GDK_a,   GDK_i,       0,       0,       0, },  "घै" }, /* Ga + ai */
+  { {   GDK_G,   GDK_a,   GDK_a,       0,       0,       0, },  "घा" }, /* Ga + aa */
+  { {   GDK_G,   GDK_o,       0,       0,       0,       0, },  "घो" }, /* Ga + o */
+  { {   GDK_G,   GDK_i,       0,       0,       0,       0, },  "घि" }, /* Ga + i */
+  { {   GDK_G,   GDK_U,       0,       0,       0,       0, },  "घू" }, /* Ga + U */
+
+  { {   GDK_f,       0,       0,       0,       0,       0, },  "ट्" }, /* fa + virama */
+  { {   GDK_f,   GDK_a,       0,       0,       0,       0, },  "ट" }, /* fa */
+  { {   GDK_f,   GDK_e,       0,       0,       0,       0, },  "टे" }, /* fa + e */
+  { {   GDK_f,   GDK_A,       0,       0,       0,       0, },  "टा" }, /* fa + A */
+  { {   GDK_f,   GDK_r,       0,       0,       0,       0, },  "टृ" }, /* fa + r */
+  { {   GDK_f,   GDK_i,   GDK_i,       0,       0,       0, },  "टी" }, /* fa + ii */
+  { {   GDK_f,   GDK_E,       0,       0,       0,       0, },  "टै" }, /* fa + E */
+  { {   GDK_f,   GDK_r,   GDK_r,       0,       0,       0, },  "टॄ" }, /* fa + rr */
+  { {   GDK_f,   GDK_a,   GDK_u,       0,       0,       0, },  "टौ" }, /* fa + au */
+  { {   GDK_f,   GDK_u,       0,       0,       0,       0, },  "टु" }, /* fa + u */
+  { {   GDK_f,   GDK_u,   GDK_u,       0,       0,       0, },  "टू" }, /* fa + uu */
+  { {   GDK_f,   GDK_R,       0,       0,       0,       0, },  "टॄ" }, /* fa + R */
+  { {   GDK_f,   GDK_I,       0,       0,       0,       0, },  "टी" }, /* fa + I */
+  { {   GDK_f,   GDK_a,   GDK_i,       0,       0,       0, },  "टै" }, /* fa + ai */
+  { {   GDK_f,   GDK_a,   GDK_a,       0,       0,       0, },  "टा" }, /* fa + aa */
+  { {   GDK_f,   GDK_o,       0,       0,       0,       0, },  "टो" }, /* fa + o */
+  { {   GDK_f,   GDK_i,       0,       0,       0,       0, },  "टि" }, /* fa + i */
+  { {   GDK_f,   GDK_U,       0,       0,       0,       0, },  "टू" }, /* fa + U */
+
+  { {   GDK_c,       0,       0,       0,       0,       0, },  "च्" }, /* ca + virama */
+  { {   GDK_c,   GDK_a,       0,       0,       0,       0, },  "च" }, /* ca */
+  { {   GDK_c,   GDK_e,       0,       0,       0,       0, },  "चे" }, /* ca + e */
+  { {   GDK_c,   GDK_A,       0,       0,       0,       0, },  "चा" }, /* ca + A */
+  { {   GDK_c,   GDK_r,       0,       0,       0,       0, },  "चृ" }, /* ca + r */
+  { {   GDK_c,   GDK_i,   GDK_i,       0,       0,       0, },  "ची" }, /* ca + ii */
+  { {   GDK_c,   GDK_E,       0,       0,       0,       0, },  "चै" }, /* ca + E */
+  { {   GDK_c,   GDK_r,   GDK_r,       0,       0,       0, },  "चॄ" }, /* ca + rr */
+  { {   GDK_c,   GDK_a,   GDK_u,       0,       0,       0, },  "चौ" }, /* ca + au */
+  { {   GDK_c,   GDK_u,       0,       0,       0,       0, },  "चु" }, /* ca + u */
+  { {   GDK_c,   GDK_u,   GDK_u,       0,       0,       0, },  "चू" }, /* ca + uu */
+  { {   GDK_c,   GDK_R,       0,       0,       0,       0, },  "चॄ" }, /* ca + R */
+  { {   GDK_c,   GDK_I,       0,       0,       0,       0, },  "ची" }, /* ca + I */
+  { {   GDK_c,   GDK_a,   GDK_i,       0,       0,       0, },  "चै" }, /* ca + ai */
+  { {   GDK_c,   GDK_a,   GDK_a,       0,       0,       0, },  "चा" }, /* ca + aa */
+  { {   GDK_c,   GDK_o,       0,       0,       0,       0, },  "चो" }, /* ca + o */
+  { {   GDK_c,   GDK_i,       0,       0,       0,       0, },  "चि" }, /* ca + i */
+  { {   GDK_c,   GDK_U,       0,       0,       0,       0, },  "चू" }, /* ca + U */
+
+  { {   GDK_Z,       0,       0,       0,       0,       0, },  "क्ष्" }, /* Za + virama */
+  { {   GDK_Z,   GDK_a,       0,       0,       0,       0, },  "क्ष" }, /* Za */
+  { {   GDK_Z,   GDK_e,       0,       0,       0,       0, },  "क्षे" }, /* Za + e */
+  { {   GDK_Z,   GDK_A,       0,       0,       0,       0, },  "क्षा" }, /* Za + A */
+  { {   GDK_Z,   GDK_r,       0,       0,       0,       0, },  "क्षृ" }, /* Za + r */
+  { {   GDK_Z,   GDK_i,   GDK_i,       0,       0,       0, },  "क्षी" }, /* Za + ii */
+  { {   GDK_Z,   GDK_E,       0,       0,       0,       0, },  "क्षै" }, /* Za + E */
+  { {   GDK_Z,   GDK_r,   GDK_r,       0,       0,       0, },  "क्षॄ" }, /* Za + rr */
+  { {   GDK_Z,   GDK_a,   GDK_u,       0,       0,       0, },  "क्षौ" }, /* Za + au */
+  { {   GDK_Z,   GDK_u,       0,       0,       0,       0, },  "क्षु" }, /* Za + u */
+  { {   GDK_Z,   GDK_u,   GDK_u,       0,       0,       0, },  "क्षू" }, /* Za + uu */
+  { {   GDK_Z,   GDK_R,       0,       0,       0,       0, },  "क्षॄ" }, /* Za + R */
+  { {   GDK_Z,   GDK_I,       0,       0,       0,       0, },  "क्षी" }, /* Za + I */
+  { {   GDK_Z,   GDK_a,   GDK_i,       0,       0,       0, },  "क्षै" }, /* Za + ai */
+  { {   GDK_Z,   GDK_a,   GDK_a,       0,       0,       0, },  "क्षा" }, /* Za + aa */
+  { {   GDK_Z,   GDK_o,       0,       0,       0,       0, },  "क्षो" }, /* Za + o */
+  { {   GDK_Z,   GDK_i,       0,       0,       0,       0, },  "क्षि" }, /* Za + i */
+  { {   GDK_Z,   GDK_U,       0,       0,       0,       0, },  "क्षू" }, /* Za + U */
+
+  { {   GDK_s,   GDK_s,       0,       0,       0,       0, },  "ष्" }, /* ssa + virama */
+  { {   GDK_s,   GDK_s,   GDK_a,       0,       0,       0, },  "ष" }, /* ssa */
+  { {   GDK_s,   GDK_s,   GDK_e,       0,       0,       0, },  "षे" }, /* ssa + e */
+  { {   GDK_s,   GDK_s,   GDK_A,       0,       0,       0, },  "षा" }, /* ssa + A */
+  { {   GDK_s,   GDK_s,   GDK_r,       0,       0,       0, },  "षृ" }, /* ssa + r */
+  { {   GDK_s,   GDK_s,   GDK_i,   GDK_i,       0,       0, },  "षी" }, /* ssa + ii */
+  { {   GDK_s,   GDK_s,   GDK_E,       0,       0,       0, },  "षै" }, /* ssa + E */
+  { {   GDK_s,   GDK_s,   GDK_r,   GDK_r,       0,       0, },  "षॄ" }, /* ssa + rr */
+  { {   GDK_s,   GDK_s,   GDK_a,   GDK_u,       0,       0, },  "षौ" }, /* ssa + au */
+  { {   GDK_s,   GDK_s,   GDK_u,       0,       0,       0, },  "षु" }, /* ssa + u */
+  { {   GDK_s,   GDK_s,   GDK_u,   GDK_u,       0,       0, },  "षू" }, /* ssa + uu */
+  { {   GDK_s,   GDK_s,   GDK_R,       0,       0,       0, },  "षॄ" }, /* ssa + R */
+  { {   GDK_s,   GDK_s,   GDK_I,       0,       0,       0, },  "षी" }, /* ssa + I */
+  { {   GDK_s,   GDK_s,   GDK_a,   GDK_i,       0,       0, },  "षै" }, /* ssa + ai */
+  { {   GDK_s,   GDK_s,   GDK_a,   GDK_a,       0,       0, },  "षा" }, /* ssa + aa */
+  { {   GDK_s,   GDK_s,   GDK_o,       0,       0,       0, },  "षो" }, /* ssa + o */
+  { {   GDK_s,   GDK_s,   GDK_i,       0,       0,       0, },  "षि" }, /* ssa + i */
+  { {   GDK_s,   GDK_s,   GDK_U,       0,       0,       0, },  "षू" }, /* ssa + U */
+
+  { {   GDK_N,       0,       0,       0,       0,       0, },  "ण्" }, /* Na + virama */
+  { {   GDK_N,   GDK_a,       0,       0,       0,       0, },  "ण" }, /* Na */
+  { {   GDK_N,   GDK_e,       0,       0,       0,       0, },  "णे" }, /* Na + e */
+  { {   GDK_N,   GDK_A,       0,       0,       0,       0, },  "णा" }, /* Na + A */
+  { {   GDK_N,   GDK_r,       0,       0,       0,       0, },  "णृ" }, /* Na + r */
+  { {   GDK_N,   GDK_i,   GDK_i,       0,       0,       0, },  "णी" }, /* Na + ii */
+  { {   GDK_N,   GDK_E,       0,       0,       0,       0, },  "णै" }, /* Na + E */
+  { {   GDK_N,   GDK_r,   GDK_r,       0,       0,       0, },  "णॄ" }, /* Na + rr */
+  { {   GDK_N,   GDK_a,   GDK_u,       0,       0,       0, },  "णौ" }, /* Na + au */
+  { {   GDK_N,   GDK_u,       0,       0,       0,       0, },  "णु" }, /* Na + u */
+  { {   GDK_N,   GDK_u,   GDK_u,       0,       0,       0, },  "णू" }, /* Na + uu */
+  { {   GDK_N,   GDK_R,       0,       0,       0,       0, },  "णॄ" }, /* Na + R */
+  { {   GDK_N,   GDK_I,       0,       0,       0,       0, },  "णी" }, /* Na + I */
+  { {   GDK_N,   GDK_a,   GDK_i,       0,       0,       0, },  "णै" }, /* Na + ai */
+  { {   GDK_N,   GDK_a,   GDK_a,       0,       0,       0, },  "णा" }, /* Na + aa */
+  { {   GDK_N,   GDK_o,       0,       0,       0,       0, },  "णो" }, /* Na + o */
+  { {   GDK_N,   GDK_i,       0,       0,       0,       0, },  "णि" }, /* Na + i */
+  { {   GDK_N,   GDK_U,       0,       0,       0,       0, },  "णू" }, /* Na + U */
+
+  { {   GDK_n,       0,       0,       0,       0,       0, },  "न्" }, /* na + virama */
+  { {   GDK_n,   GDK_a,       0,       0,       0,       0, },  "न" }, /* na */
+  { {   GDK_n,   GDK_e,       0,       0,       0,       0, },  "ने" }, /* na + e */
+  { {   GDK_n,   GDK_A,       0,       0,       0,       0, },  "ना" }, /* na + A */
+  { {   GDK_n,   GDK_r,       0,       0,       0,       0, },  "नृ" }, /* na + r */
+  { {   GDK_n,   GDK_i,   GDK_i,       0,       0,       0, },  "नी" }, /* na + ii */
+  { {   GDK_n,   GDK_E,       0,       0,       0,       0, },  "नै" }, /* na + E */
+  { {   GDK_n,   GDK_r,   GDK_r,       0,       0,       0, },  "नॄ" }, /* na + rr */
+  { {   GDK_n,   GDK_a,   GDK_u,       0,       0,       0, },  "नौ" }, /* na + au */
+  { {   GDK_n,   GDK_u,       0,       0,       0,       0, },  "नु" }, /* na + u */
+  { {   GDK_n,   GDK_u,   GDK_u,       0,       0,       0, },  "नू" }, /* na + uu */
+  { {   GDK_n,   GDK_R,       0,       0,       0,       0, },  "नॄ" }, /* na + R */
+  { {   GDK_n,   GDK_I,       0,       0,       0,       0, },  "नी" }, /* na + I */
+  { {   GDK_n,   GDK_a,   GDK_i,       0,       0,       0, },  "नै" }, /* na + ai */
+  { {   GDK_n,   GDK_a,   GDK_a,       0,       0,       0, },  "ना" }, /* na + aa */
+  { {   GDK_n,   GDK_o,       0,       0,       0,       0, },  "नो" }, /* na + o */
+  { {   GDK_n,   GDK_i,       0,       0,       0,       0, },  "नि" }, /* na + i */
+  { {   GDK_n,   GDK_U,       0,       0,       0,       0, },  "नू" }, /* na + U */
+};
+
+
+static const guint16 devanagari_phonetic_compose_ignore[] = 
+{
+  GDK_Shift_L,
+  GDK_Shift_R,
+  GDK_Control_L,
+  GDK_Control_R,
+  GDK_Caps_Lock,
+  GDK_Shift_Lock,
+  GDK_Meta_L,
+  GDK_Meta_R,
+  GDK_Alt_L,
+  GDK_Alt_R,
+  GDK_Super_L,
+  GDK_Super_R,
+  GDK_Hyper_L,
+  GDK_Hyper_R,
+  GDK_Mode_switch,
+};
+
+
+static void
+clear_compose_buffer ()
+{
+  memset (compose_buffer, 0, sizeof (compose_buffer));
+  n_compose = 0;
+}
+
+
+/* returns the composed string iff keys exactly matches the compose
+ * sequence keys */
+static ComposeSequence *
+find_complete_compose_sequence (guint *keys)
+{
+  gint i, j;
+
+  for (i = 0;  i < G_N_ELEMENTS (devanagari_phonetic_compose_seqs);  i++)
+    for (j = 0;  j <= DEVANAGARI_PHONETIC_MAX_COMPOSE_LEN;  j++)
+      {
+        if (keys[j] != devanagari_phonetic_compose_seqs[i].keys[j])
+          break;
+        else if (keys[j] == 0 && keys[j] == devanagari_phonetic_compose_seqs[i].keys[j])
+          return devanagari_phonetic_compose_seqs + i;
+      }
+
+  return NULL;
+}
+
+
+/* returns the composed string iff keys is a substring thang of the compose
+ * sequence keys */
+static ComposeSequence *
+find_incomplete_compose_sequence (guint *keys)
+{
+  gint i, j;
+
+  for (i = 0;  i < G_N_ELEMENTS (devanagari_phonetic_compose_seqs);  i++)
+    for (j = 0;  j <= DEVANAGARI_PHONETIC_MAX_COMPOSE_LEN;  j++)
+      {
+        if (keys[j] == 0 && devanagari_phonetic_compose_seqs[i].keys[j] != 0)
+          return devanagari_phonetic_compose_seqs + i;
+        else if (keys[j] != devanagari_phonetic_compose_seqs[i].keys[j])
+          break;
+      }
+
+  return NULL;
+}
+
+
+static void     
+devanagari_phonetic_get_preedit_string (GtkIMContext   *context,
+                                        gchar         **str,
+                                        PangoAttrList **attrs,
+                                        gint           *cursor_pos)
+{
+  ComposeSequence *comp_seq;
+  gchar *string;
+  gint len;
+
+  comp_seq = find_complete_compose_sequence (compose_buffer);
+  if (comp_seq == NULL)
+    string = "";
+  else
+    string = comp_seq->string;
+
+  *str = g_strdup (string);
+  len = strlen (*str);
+
+  if (attrs)
+    {
+      *attrs = pango_attr_list_new ();
+
+      /* this can cause a pango crash pre-1.2.3 (so we require >= 1.2.3)
+       * http://bugzilla.gnome.org/show_bug.cgi?id=104976 */
+      if (len != 0)
+        {
+          PangoAttribute *attr;
+          attr = pango_attr_underline_new (PANGO_UNDERLINE_SINGLE);
+          attr->start_index = 0;
+          attr->end_index = len;
+          pango_attr_list_insert (*attrs, attr);
+        }
+    }
+
+  if (cursor_pos)
+    *cursor_pos = len;
+}
+
+
+static void
+devanagari_phonetic_reset (GtkIMContext *context)
+{
+  clear_compose_buffer ();
+  g_signal_emit_by_name (context, "preedit-changed");
+}
+
+
+static gboolean
+no_sequence_matches (GtkIMContext *context, 
+                     GdkEventKey *event)
+{
+  gunichar uc;
+  gchar buf[7];
+
+  uc = gdk_keyval_to_unicode (event->keyval);
+  if (uc != 0)
+    {
+      buf[g_unichar_to_utf8 (uc, buf)] = '\0';
+      g_signal_emit_by_name (context, "commit", buf);
+      g_signal_emit_by_name (context, "preedit-changed");
+
+      return TRUE;
+    }
+  else
+    return FALSE;
+}
+
+
+static gboolean
+devanagari_phonetic_filter_keypress (GtkIMContext *context,
+                                     GdkEventKey  *event)
+{
+  ComposeSequence *comp_seq;
+  gint i;
+
+  if (event->type == GDK_KEY_RELEASE)
+    return FALSE;
+
+  /* don't filter key events with accelerator modifiers held down */
+  if (event->state 
+      & (gtk_accelerator_get_default_mod_mask () & ~GDK_SHIFT_MASK))
+    return FALSE;
+
+  for (i = 0;  i < G_N_ELEMENTS (devanagari_phonetic_compose_ignore);  i++)
+    if (event->keyval == devanagari_phonetic_compose_ignore[i])
+      return FALSE;
+
+  /* '|' commits what we have */
+  if (event->keyval == GDK_bar && n_compose > 0) 
+    {
+      comp_seq = find_complete_compose_sequence (compose_buffer);
+      if (comp_seq != NULL)
+        {
+          g_signal_emit_by_name (context, "commit", comp_seq->string);
+          clear_compose_buffer ();
+        }
+
+      g_signal_emit_by_name (context, "preedit-changed");
+      return TRUE;
+    }
+
+  compose_buffer[n_compose] = event->keyval;
+  n_compose++;
+
+  if (find_incomplete_compose_sequence (compose_buffer) != NULL)
+    {
+      g_signal_emit_by_name (context, "preedit-changed");
+      return TRUE;
+    }
+
+  comp_seq = find_complete_compose_sequence (compose_buffer);
+  if (comp_seq != NULL)
+    {
+      g_signal_emit_by_name (context, "commit", comp_seq->string);
+      clear_compose_buffer ();
+      g_signal_emit_by_name (context, "preedit-changed");
+      return TRUE;
+    }
+
+  /* if we reach this point, the sequence *with the key just pressed*
+   * cannot be a complete or incomplete match, so: commit the old sequence,
+   * then reprocess this key */
+
+  n_compose--;
+  compose_buffer[n_compose] = 0;
+
+  if (n_compose > 0)
+    {
+      comp_seq = find_complete_compose_sequence (compose_buffer);
+      g_signal_emit_by_name (context, "commit", comp_seq->string);
+      clear_compose_buffer ();
+      g_signal_emit_by_name (context, "preedit-changed");
+
+      return devanagari_phonetic_filter_keypress (context, event);
+    }
+
+  return no_sequence_matches (context, event);
+}
+
+
+static void
+devanagari_phonetic_class_init (GtkIMContextClass *clazz)
+{
+  clazz->filter_keypress = devanagari_phonetic_filter_keypress;
+  clazz->get_preedit_string = devanagari_phonetic_get_preedit_string;
+  clazz->reset = devanagari_phonetic_reset;
+}
+
+
+void 
+im_module_exit ()
+{
+}
+
+
+static void
+devanagari_phonetic_init (GtkIMContext *im_context)
+{
+}
+
+
+static void
+devanagari_phonetic_register_type (GTypeModule *module)
+{
+  static const GTypeInfo object_info =
+  {
+    sizeof (GtkIMContextClass),
+    (GBaseInitFunc) NULL,
+    (GBaseFinalizeFunc) NULL,
+    (GClassInitFunc) devanagari_phonetic_class_init,
+    NULL,           /* class_finalize */
+    NULL,           /* class_data */
+    sizeof (GtkIMContext),
+    0,
+    (GInstanceInitFunc) devanagari_phonetic_init,
+  };
+
+  type_devanagari_phonetic = 
+    g_type_module_register_type (module,
+                                 GTK_TYPE_IM_CONTEXT,
+                                 "GtkIMContextDevanagariPhonetic",
+                                 &object_info, 0);
+}
+
+
+static const GtkIMContextInfo devanagari_phonetic_info = 
+{
+  "devanagari_phonetic",       /* ID */
+  N_("Devanagari (phonetic)"), /* Human readable name */
+  GETTEXT_PACKAGE,             /* Translation domain */
+  LOCALEDIR,                   /* Dir for bindtextdomain */
+  "hi",                        /* Languages for which this module is the default */
+};
+
+
+static const GtkIMContextInfo *info_list[] = 
+{
+  &devanagari_phonetic_info,
+};
+
+
+void
+im_module_init (GTypeModule *module)
+{
+  devanagari_phonetic_register_type (module);
+}
+
+
+void 
+im_module_list (const GtkIMContextInfo ***contexts, gint *n_contexts)
+{
+  *contexts = info_list;
+  *n_contexts = G_N_ELEMENTS (info_list);
+}
+
+
+GtkIMContext *
+im_module_create (const gchar *context_id)
+{
+  if (strcmp (context_id, "devanagari_phonetic") == 0)
+    return GTK_IM_CONTEXT (g_object_new (type_devanagari_phonetic, NULL));
+  else
+    return NULL;
+}
+
+
+

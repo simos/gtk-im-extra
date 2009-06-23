@@ -1,0 +1,140 @@
+2008-07-03  Alexandre Owen Muniz  <munizao@xprt.net>
+
+	* src/imlatinplus.c: Added some requested mathematical characters, and added combining diacritics.
+
+2007-5-22  Alexandre Owen Muniz  <munizao@xprt.net>
+
+	* src/imlatinplus.c: Fixed aformentioned hack, added geometric shapes and logical and and or characters.
+
+2006-11-02  Alexandre Owen Muniz  <munizao@xprt.net>
+
+	* src/imlatinplus.c: Added hack for pasting from primary selection.
+
+2006-06-10  Marius L. Jøhndal  <mariuslj@ifi.uio.no>
+
+	* src/Makefile.am:
+	* src/imlinearb.c: Added Linear B input method.
+
+2005-12-22  Alexandre Owen Muniz  <munizao@xprt.net>
+
+	* src/imlatinplus.c: Added greek characters.
+
+2005-04-04  Noah Levitt
+
+	* src/Makefile.am:
+	* src/gtkimcontextthai.c:
+	* src/gtkimcontextthai.h:
+	* src/imthai.c:
+	* src/thai-charprop.c:
+	* src/thai-charprop.h: Thai/Lao input method contributed by
+	Theppitak Karoonboonyanan <thep@linux.thai.net>
+
+2005-02-06  Denis Jacquerye <moyogo@gmail.com>
+	* src/Makefile.am: Add imam-et, imti-er, imti-et and imipa
+	* src/imam-et.c: Add Amharic input method.
+	* src/imti-er.c: Add Tigrina-Eritrean input method.
+	* src/imti-et.c: Add Tigrina-Ethiopian input method.
+	* src/gtkimcontextethio.*: Add Ethiopian input methods.
+	* src/imipa-xsampa.c: Add IPA (X-SAMPA) input method.
+
+2004-06-20  Alexander "Ajvol" Sigachev <ajvol@mail.ru>
+
+	* src/Makefile.am:
+	* src/imesperanto.c: Add esperanto input method (x-system)
+
+2004-06-02  Tor Lillqvist  <tml@iki.fi>
+
+	* configure.ac: Don't use -mwindows on Windows. We don't want
+	im-module-file to be a GUI application. And for modules -mwindows
+	doesn't matter anyway. Set OS_WIN32 automake variable.
+
+	* src/Makefile.am: Use -no-undefined on Windows, and link
+	explicitly with -lintl.
+
+2004-01-22  Marius L. Jøhndal
+
+	* src/Makefile.am:
+	* src/imchurchslavonic.c: (Old) Church Slavonic input method.
+
+2003-09-25  Noah Levitt
+
+	* src/imtamil99.c: Fix type name.
+
+2003-09-02  Noah Levitt
+
+	* src/imyiddish-r.c: Fix 'uvu' bug. (Raphael Finkel)
+
+2003-08-21  Noah Levitt
+
+	* src/gen-devphon-consonants.pl: 
+	* src/imdevphon.c: Various additions and improvements.
+
+2003-08-20  Noah Levitt
+
+	* src/Makefile.am:
+	* src/imdevphon.c: Add phonetic devanagari input method.
+
+2003-08-20  Noah Levitt
+
+	* src/gen-devphon-consonants.pl: Script to generate the consonants
+	part of imdevphon.c.
+
+2003-08-20  Noah Levitt
+
+	* configure.ac: Check for pango >= 1.2.3.
+	* src/imtamil99.c: Enable underline drawing. This caused a segfault in
+	pango pre-1.2.3, so we require >= 1.2.3.
+
+2003-08-20  Noah Levitt
+
+	* Makefile.in.in: Remove. It's a generated file.
+
+2003-06-29  Alexandre Muniz
+	* src/imlatinplus.c: Added arrow characters.
+
+2003-06-24  Alexandre Muniz
+	* src/imlatinplus.c: Added lots of characters, mostly mathematical operators. 
+	
+2003-06-10  Alexandre Muniz
+
+	* src/Makefile.am:
+	* src/imlatinplus.c: Input method with an extended compose sequence table for latin alphabet languages.
+
+2003-06-05  Noah Levitt
+
+	* src/imtamil99.c: Make GDK_bar ('|') work correctly.
+
+2003-06-05  Noah Levitt
+
+	* src/imyiddish-n.c: Ignore keystrokes with alt,ctrl,etc.
+
+2003-06-05  Noah Levitt
+
+	* src/Makefile.am:
+	* src/imtamil99.c: Tamil input method.
+
+2003-06-03  Noah Levitt
+
+	* src/Makefile.am: Fix gtk.immodules writing.
+
+2003-05-03  Noah Levitt
+
+	* README:
+	* configure.ac:
+	* src/Makefile.am:
+	* src/im-module-file.c: Write /etc/gtk-2.0/gtk.immodules.
+
+2003-04-23  Noah Levitt
+
+	* src/imyiddish-r.c: 
+	* src/Makefile.am: Add Raphael's Yiddish input method.
+
+2003-04-23  Noah Levitt
+
+	* COPYING:
+	* Makefile.am:
+	* configure.ac:
+	* po/Makefile.in.in:
+	* po/POTFILES.in:
+	* src/Makefile.am:
+	* src/imyiddish-n.c: Initial add of files.

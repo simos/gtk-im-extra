@@ -1,0 +1,30 @@
+This is the README for gtk-im-extra.
+
+gtk-im-extra is a collection of third party GTK+ input method modules.
+
+
+COMPILATION
+
+gtk-im-extra uses GTK+ 2.2 or later, which you can get from
+http://gtk.org/. 
+
+To compile and install, do the usual
+
+   ./configure
+   make
+   make install
+
+
+SETUP
+
+Installation overwrites the system-wide input module cache file,
+normally /etc/gtk-2.0/gtk.immodules. (This is the right thing to do,
+see http://bugzilla.gnome.org/show_bug.cgi?id=112099.)
+
+You will want to add ${prefix}/lib/gtk-2.0/$(GTK_BINARY_VERSION)/immodules
+the directory where the input modules are installed, to your
+system-wide GTK_PATH.
+
+
+Noah Levitt <nlevitt аt columbia.edu>
+$Id: README,v 1.2 2003/05/03 19:02:27 nlevitt Exp $
