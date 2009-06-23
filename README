@@ -1,3 +1,7 @@
+Imported on the 23rd June 2009.
+No history was imported due to cvs2git complexity.
+-----------
+
 This is the README for gtk-im-extra.
 
 gtk-im-extra is a collection of third party GTK+ input method modules.
